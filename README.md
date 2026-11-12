@@ -1,104 +1,121 @@
-# Intelligent Real-Time AI Surveillance & Behavioral Threat Detection System
+# AI Surveillance & Behavioral Threat Detection System
 
-A real-time live camera surveillance and threat-monitoring application featuring interactive tripwire zones, biometric facial verification, automated incident logging (CSV audit trail & annotated JPEG snapshots), and training-free pose/motion anomaly detection.
+Autonomous Edge Vision Platform — integrates real-time human tracking, interactive tripwire boundary enforcement, 512-dimensional facial biometrics, and training-free behavioral threat detection.
 
 ---
 
-## Features
+## Project Structure
 
-- **Dedicated Live Camera Pipeline** — Real-time capture (Device 0) with aspect-ratio-preserving letterboxing, clean Standby screen when paused, and thread-safe Queue rendering.
-- **Biometric Facial Verification (`Facenet512` + `YuNet`)** —
-  - **Landmark Verification**: Requires genuine human facial landmarks before matching; covered or obscured faces are rejected (`FACE OBSCURED / INTRUDER`).
-  - **Top-K + Margin Matching**: Compares 512-D embeddings against enrolled personnel using Top-3 mean cosine similarity plus a runner-up margin check (`FACE_DISTANCE_THRESH = 0.35`, `FACE_MATCH_MARGIN = 0.05`).
-  - **Grace Period & Voting State Machine**: Tracks progress through `OUTSIDE → SCANNING → AUTHORIZED | INTRUDER | OBSCURED` using `2-of-3` vote quorum over a 2.5s grace window, plus 10s periodic re-authentication.
-- **Training-Free Behavioural & Safety Anomalies**:
-  - **Pose-Based Fall Detection**: Uses `yolov8n-pose.pt` torso tilt angle (`> 60°` sustained `>= 1.0s`), with calibrated bounding-box fallback.
-  - **Running / Rapid Movement**: Scale-invariant body-heights/sec tracking (`> 1.5 bh/s` sustained `>= 0.5s`).
-  - **Loitering Escalation**: Escalates unauthorized intrusion if dwell time exceeds `4.0s`.
-  - **Crowding & After-Hours Rules**: Configurable `MAX_PEOPLE_IN_ROI` and `RESTRICTED_HOURS`.
-- **Automated Incident Logging (`AlertManager`)**:
-  - Structured **`outputs/incidents.csv`** log recording ISO timestamps, track ID, name, status, dwell time, and message.
-  - Full-frame annotated JPEG snapshots saved automatically to `outputs/` with tripwire boundaries.
-  - Auto-pruning retention policy (default 30 days).
+```
+Computer-Vision-Project/
+├── main.py                  # Core unified application: dashboard, tracking, biometrics & enrollment studio
+├── known_faces/             # Biometric gallery containing enrolled personnel face crops
+├── cache/                   # Incremental biometric embeddings cache (instant zero-delay startup)
+│   ├── embeddings.npz       # Pre-computed 512-D unit embedding matrices
+│   └── manifest.json        # Cache validation manifest with file hashes & timestamps
+├── outputs/                 # Incident audit records & annotated threat snapshots
+│   ├── incidents.csv        # Structured CSV security audit log
+│   └── alert_*.jpg          # Full-frame annotated incident captures with tripwire overlay
+├── yolov8n-pose.pt          # Pretrained YOLOv8-Pose weights (17-keypoint human skeleton model)
+├── requirements.txt         # Pinned Python dependencies
+├── context.md               # Technical report, model benchmark analysis & state machine design
+├── report.tex               # Formatted LaTeX technical report (IEEE/ACM laboratory paper style)
+└── README.md                # System documentation and operational manual
+```
+
+**Architecture:** The entire platform executes as a **single consolidated process** (`main.py`) powered by dedicated daemon worker threads. The video acquisition thread captures live frames at native sensor rates with aspect-ratio letterboxing. Person detections and 17 COCO skeletal keypoints are tracked across frames via ByteTrack. Bounded asynchronous workers handle biometric identity verification using `Facenet512` and OpenCV `YuNet` against an in-memory normalized vector gallery. Thread-safe queues stream annotated visual overlays to a custom GitHub-dark themed Tkinter GUI while logging incidents to disk.
 
 ---
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Prerequisites & Installation
 
-```powershell
+Clone the repository and install runtime dependencies within a Python virtual environment:
+
+```bash
+# Clone repository
+git clone https://github.com/vivekvardhan28/Computer-Vision-Project.git
+cd Computer-Vision-Project
+
+# Install pinned dependencies
 pip install -r requirements.txt
 ```
 
-### 2. Single-File Execution
+### 2. Launch Live Surveillance
 
-The entire system is self-contained in **`main.py`**:
+Start the main surveillance workstation:
 
-```powershell
-# Run the complete AI Surveillance System dashboard
+```bash
 python main.py
 ```
 
-*Note: You can also open the Face Enrollment Studio directly from inside the dashboard by clicking **`👤 Face Enrollment Studio`**, or run it directly via CLI:*
+* **Activate Camera:** Click **`▶ Start surveillance`** to initiate live camera capture (Device 0).
+* **Adjust Tripwire ROI:** Click and drag anywhere on the live video canvas to define a custom monitoring boundary. Click **`↺ Reset tripwire`** to revert to the default centered corridor.
+* **Test Incident Auditing:** Click **`Send Test Alert`** to instantly verify disk logging and snapshot capture.
+* **Inspect Security Logs:** Click **`Open Log`** or **`Open Snapshots`** to review `outputs/incidents.csv` and visual evidence files.
 
-```powershell
+### 3. Personnel Face Enrollment
+
+Enroll authorized individuals directly from the running dashboard by clicking **`👤 Enroll personnel`** (which safely pauses surveillance to release the camera), or launch the enrollment studio directly via CLI:
+
+```bash
 python main.py --enroll
 ```
 
-### 3. Quick Operation Guide
-
-1. **Dashboard Controls**:
-   - Draw a custom **Tripwire Zone** directly by clicking and dragging on the video canvas (or use default).
-   - Click **`▶ Start Surveillance`** to activate live webcam threat monitoring.
-   - Click **`👤 Face Enrollment Studio`** to enroll new authorized personnel with guided poses.
-   - Click **`Send Test Alert`** to test CSV incident logging and snapshot generation.
-2. **Review Incidents**:
-   - Click **`📂 Open Snapshots Folder`** to inspect captured breach snapshots.
-   - Click **`📄 Open CSV Log`** to review `outputs/incidents.csv`.
+1. Enter the person's identifier or name (e.g., `Vivek`).
+2. Follow the guided pose prompts (*Front*, *Slightly left*, *Slightly right*, *Slightly up*, *Smile*, etc.).
+3. Click **`📸 Capture Photo`** to acquire samples. The background biometric gate automatically verifies that:
+   * Exactly 1 face is present with YuNet detection confidence $\ge 0.90$.
+   * Face width is at least 80 pixels.
+   * Image sharpness (Laplacian variance) meets the clarity threshold ($\ge 60.0$).
+   * Cosine similarity against recent captures is $\le 0.98$ (prevents redundant duplicate angles).
+4. Closing the studio window automatically re-indexes `cache/embeddings.npz` and resumes system readiness without restarting.
 
 ---
 
-## Submission Package Inventory
+## Tech Stack
 
-For academic/course evaluation requiring a single self-contained `.py` file:
-
-| Item | Status | Purpose |
+| Layer | Technology | Details |
 | :--- | :--- | :--- |
-| **`main.py`** | **KEEP (Core)** | **Single consolidated executable** containing GUI, YOLOv8 tracker, Facenet512 engine, AlertManager, and Face Enrollment Studio. |
-| **`requirements.txt`** | **KEEP** | Package dependencies (`ultralytics`, `deepface`, `opencv-python`, etc.). |
-| **`known_faces/`** | **KEEP** | Enrolled face dataset (`vivek/`, `Susan/`) for live verification. |
-| **`yolov8n-pose.pt`** | **KEEP** | Local pose model weights (enables offline evaluation without downloading). |
-| **`yolov8n.pt`** | **KEEP** | Fallback detection model weights. |
-| **`cache/`** | **KEEP** | Pre-computed embeddings (`embeddings.npz`) for instant zero-delay startup. |
-| **`outputs/`** | **KEEP** | Sample incident logs (`incidents.csv`) and breach snapshots. |
-| **`README.md` / `context.md`** | **KEEP** | Documentation and technical project report. |
-| `_archive/` | *EXCLUDE / BACKUP* | Archived legacy modular files (`config.py`, `face_db.py`, etc., now merged into `main.py`). |
+| **Object Detection & Pose** | Ultralytics YOLOv8-Pose (`yolov8n-pose.pt`) | 17 COCO human skeletal keypoints at 640px input resolution |
+| **Object Tracking** | ByteTrack (`bytetrack.yaml`) | Two-stage association using high- and low-confidence detection boxes |
+| **Face Detection & Landmarks** | OpenCV YuNet (`face_detection_yunet`) | 5-point facial landmark detector with strict face presence enforcement |
+| **Biometric Embeddings** | DeepFace (`Facenet512`) | 512-dimensional unit-normalized facial embeddings |
+| **Biometric Database** | In-Memory `FaceDB` + NumPy Matrix Ops | Top-3 cosine similarity aggregation with runner-up margin thresholding |
+| **User Interface** | Python Tkinter + TTK + Pillow | GitHub Primer Dark palette (`#0d1117`), anti-aliased HUD badges, custom widgets |
+| **Incident Logging** | Asynchronous `AlertManager` | Automated CSV audit trail (`outputs/incidents.csv`) and JPEG snapshots |
 
 ---
 
-## Evaluation Scenario Matrix
+## System Operational Specifications
 
-Test and record performance across:
-1. Authorized person frontal & multi-pose
-2. Authorized person entering sideways, then turning toward camera
-3. Stranger entering alone
-4. Authorized person + stranger in the frame together (verify independent track states)
-5. Face covered (T-shirt, mask, hand) → `FACE OBSCURED`
-6. Head turned completely away during grace window
-7. Replay attack check (printed/phone photo — expected known limitation)
-8. Low-light entrance
-9. Two people crossing paths (verify 10s re-auth catches ID swaps)
-10. Real collapse/fall vs. sitting close to desk webcam
-11. Unauthorized loitering `> 4.0s`
-12. Leaving and re-entering the ROI (dwell timer reset + alert cooldown)
+| Parameter | Default Value | Description |
+| :--- | :--- | :--- |
+| `YOLO_CONF` | `0.40` | Person detection confidence floor |
+| `ROI_MODE` | `"any"` | Tripwire intersection mode (evaluates bounding-box feet and center points) |
+| `GRACE_PERIOD_SEC` | `2.5s` | Identification window before unverified targets are flagged as intruders |
+| `VOTES_REQUIRED` | `2 of 3` | Multi-frame voting quorum required for biometric authorization |
+| `FACE_DISTANCE_THRESH` | `0.35` | Maximum cosine distance threshold for genuine match ($EER = 0.00\%$) |
+| `FACE_MATCH_MARGIN` | `0.05` | Minimum score separation required between top candidate and runner-up |
+| `FALL_TORSO_ANGLE_DEG` | `60.0°` | Shoulder-to-hip torso tilt angle from vertical triggering collapse alert |
+| `FALL_SUSTAIN_SEC` | `1.0s` | Required temporal duration of horizontal posture before fall dispatch |
+| `LOITERING_THRESHOLD_SEC`| `4.0s` | Dwell duration triggering loitering escalation for unauthorized persons |
+| `REAUTH_INTERVAL_SEC` | `10.0s` | Periodic re-verification timer to detect ID switches or substitutions |
 
 ---
 
-## Limitations & Responsible Use
+## Documentation
 
-- **Anti-Spoofing**: This prototype does not perform 3D depth or liveness verification; a high-resolution printed photo or screen replay of an enrolled person can match.
-- **Lighting & Pose**: Extreme backlighting, low resolution (`< 48 px` face width), or severe motion blur degrades detector confidence and delays verification.
-- **Demographic Variance**: Pretrained facial recognition models can exhibit accuracy disparities across skin tones, ages, and eyewear. Always calibrate thresholds (`tools/calibrate_threshold.py`) on representative target users.
-- **Privacy & Data Storage**: Enrolled face images in `known_faces/` and cached embeddings in `cache/` are stored unencrypted locally. Only enroll individuals with explicit informed consent. Incident snapshots in `outputs/` are automatically pruned after `SNAPSHOT_RETENTION_DAYS = 30` days.
-- **Prototype Notice**: This software is an educational/research prototype and is **not** certified for life-safety, medical fall monitoring, or regulated physical security deployments.
+- [System Architecture & Decisions](context.md) — Comprehensive technical reference detailing system design, verification state machines, biometric calibration benchmarks, and behavioral threat detection rules.
+- [Technical Project Report (LaTeX)](report.tex) — Complete 3-page laboratory paper typeset in standard academic format including methodology, system flow diagram, empirical crossing evaluation, and base paper citations.
+
+---
+
+## Team
+
+| Name | Primary Responsibility |
+| :--- | :--- |
+| **Guna** | YuNet face landmark detection, FaceNet512 embedding engine, Top-K matching and decision rules |
+| **Susan** | Behavioral anomaly detection (YOLOv8-Pose fall tilt, running speed), audit logging and documentation |
+| **Vivek** | Person detection, ByteTrack tracker pipeline, Tripwire ROI geometry and UI dashboard engineering |
