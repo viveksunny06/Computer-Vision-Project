@@ -49,7 +49,7 @@ OUTPUTS_DIR: str = "./outputs"
 TEST_MEDIA_DIR: str = "./test_media"
 
 LOITERING_THRESHOLD_SEC: float = 4.0
-FALL_ASPECT_RATIO_THRESHOLD: float = 1.25
+FALL_ASPECT_RATIO_THRESHOLD: float = 1.65
 
 # ---------------------------------------------------------------------------
 # Design System (Minimalist, Professional Slate Palette)
@@ -805,6 +805,11 @@ class SurveillanceGUIApp:
 
     def stop_surveillance(self):
         self.is_running = False
+
+        # Allow stream loop thread to gracefully exit before releasing hardware handle
+        if self.video_thread and self.video_thread.is_alive():
+            self.video_thread.join(timeout=0.3)
+
         if self.cap:
             try:
                 self.cap.release()
@@ -836,7 +841,7 @@ class SurveillanceGUIApp:
     # Asynchronous Face Verification Worker
     # -----------------------------------------------------------------------
     def _verify_face_async(self, frame_bgr: np.ndarray, bbox: Tuple[int, int, int, int], tid: int):
-        """Runs DeepFace Facenet verification in background without freezing the video stream."""
+        """Runs DeepFace Facenet + YuNet facial landmark verification in background."""
         def worker():
             name = "INTRUDER"
             is_auth = False
@@ -844,9 +849,9 @@ class SurveillanceGUIApp:
                 x1, y1, x2, y2 = bbox
                 height = y2 - y1
                 width = x2 - x1
-                # Crop upper body/head region with safety padding
-                head_y2 = int(y1 + height * 0.45)
-                pad_x = int(width * 0.1)
+                # Crop upper body/head region with generous margins for face detection
+                head_y2 = int(y1 + height * 0.55)
+                pad_x = int(width * 0.15)
                 cx1 = max(0, x1 - pad_x)
                 cy1 = max(0, y1)
                 cx2 = min(frame_bgr.shape[1], x2 + pad_x)
@@ -867,32 +872,45 @@ class SurveillanceGUIApp:
 
                     if has_known:
                         from deepface import DeepFace
-                        results = DeepFace.find(
-                            img_path=tmp_path,
-                            db_path=KNOWN_FACES_DIR,
-                            model_name="Facenet",
-                            detector_backend="skip",
-                            enforce_detection=False,
-                            silent=True,
-                        )
+                        try:
+                            # 1. Require genuine human facial landmark detection via YuNet
+                            results = DeepFace.find(
+                                img_path=tmp_path,
+                                db_path=KNOWN_FACES_DIR,
+                                model_name="Facenet",
+                                detector_backend="yunet",
+                                enforce_detection=True,
+                                silent=True,
+                            )
 
-                        if results and len(results) > 0 and not results[0].empty:
-                            df = results[0]
-                            col = "identity" if "identity" in df.columns else df.columns[0]
-                            match_full_path = str(df.iloc[0][col])
+                            if results and len(results) > 0 and not results[0].empty:
+                                df = results[0]
+                                best_dist = float(df.iloc[0]["distance"])
+                                threshold = float(df.iloc[0]["threshold"])
+                                match_full_path = str(df.iloc[0]["identity"])
 
-                            rel_path = os.path.relpath(match_full_path, KNOWN_FACES_DIR)
-                            parts = rel_path.split(os.sep)
-                            if len(parts) > 1:
-                                recognized_name = parts[0].replace("_", " ")
+                                # Strict biometric threshold matching
+                                if best_dist <= threshold:
+                                    rel_path = os.path.relpath(match_full_path, KNOWN_FACES_DIR)
+                                    parts = rel_path.split(os.sep)
+                                    recognized_name = parts[0].replace("_", " ") if len(parts) > 1 else os.path.splitext(parts[0])[0].replace("_", " ")
+                                    name = recognized_name
+                                    is_auth = True
+                                    print(f"[BIOMETRIC VERIFIED] ID:{tid} matched '{name}' (dist: {best_dist:.3f} <= {threshold:.2f})")
+                                else:
+                                    name = "UNAUTHORIZED INTRUDER"
+                                    is_auth = False
+                                    print(f"[ACCESS DENIED] ID:{tid} face does not match authorized personnel (dist: {best_dist:.3f} > {threshold:.2f})")
                             else:
-                                recognized_name = os.path.splitext(parts[0])[0].replace("_", " ")
+                                name = "UNAUTHORIZED INTRUDER"
+                                is_auth = False
+                                print(f"[ACCESS DENIED] ID:{tid} face not in authorized database")
 
-                            name = recognized_name
-                            is_auth = True
-                            print(f"[VERIFY SUCCESS] ID:{tid} matched '{name}' via {match_full_path}")
-                        else:
-                            print(f"[VERIFY FAIL] ID:{tid} not matched in known_faces DB -> INTRUDER")
+                        except Exception as det_err:
+                            # YuNet could not detect a valid human face (e.g. T-shirt covered, masked, turned away)
+                            name = "FACE OBSCURED"
+                            is_auth = False
+                            print(f"[THREAT ALERT] ID:{tid} has NO visible face (covered/obscured): {det_err}")
 
                     if os.path.exists(tmp_path):
                         try:
@@ -918,11 +936,13 @@ class SurveillanceGUIApp:
     def _process_stream_loop(self):
         prev_time = time.time()
 
-        while self.is_running and self.cap and self.cap.isOpened():
+        while self.is_running:
+            if not self.cap or not self.cap.isOpened():
+                break
+
             ret, frame = self.cap.read()
-            if not ret:
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                time.sleep(0.03)
+            if not ret or not self.is_running or frame is None:
+                time.sleep(0.01)
                 continue
 
             current_time = time.time()
@@ -988,7 +1008,7 @@ class SurveillanceGUIApp:
                 dwell_time = current_time - p_entry["entry_time"] if in_roi else 0.0
 
                 is_loitering = in_roi and (dwell_time > LOITERING_THRESHOLD_SEC)
-                is_fall = in_roi and (aspect_ratio > FALL_ASPECT_RATIO_THRESHOLD)
+                is_fall = in_roi and (aspect_ratio > FALL_ASPECT_RATIO_THRESHOLD) and (by2 > int(fh * 0.65)) and (w * h > 8000)
                 is_auth = p_entry["auth_status"] is True
                 is_verifying = tid in self.verifying_ids
 
@@ -1019,10 +1039,15 @@ class SurveillanceGUIApp:
                         box_color = (74, 222, 128) # Emerald Green (Remains permanently green for authorized staff)
                         status_text = f"AUTHORIZED: {p_entry['name']}"
 
-                # 4. Inside ROI & Unauthorized Intruder (ALWAYS CRIMSON RED with live dwell counter)
+                # 4. Inside ROI & Unauthorized Intruder / Obscured Face (ALWAYS CRIMSON RED)
                 else:
                     box_color = (68, 68, 239) # Crimson Red
-                    threat_parts = [f"UNAUTHORIZED INTRUDER ({dwell_time:.1f}s)"]
+                    if p_entry["name"] == "FACE OBSCURED":
+                        threat_label = f"FACE OBSCURED / INTRUDER ({dwell_time:.1f}s)"
+                    else:
+                        threat_label = f"UNAUTHORIZED INTRUDER ({dwell_time:.1f}s)"
+
+                    threat_parts = [threat_label]
                     if is_loitering:
                         threat_parts.append("SUSPICIOUS LOITERING")
                     if is_fall:
@@ -1055,7 +1080,8 @@ class SurveillanceGUIApp:
                         snap_name = f"ALERT_INTRUDER_ID{tid}_{ts_str}.jpg"
                         snap_path = os.path.join(OUTPUTS_DIR, snap_name)
                         cv2.imwrite(snap_path, frame)
-                        self.log_queue.put(f"[{time.strftime('%H:%M:%S')}] 🚨 INTRUSION: Unauthorized entry | ID:{tid}")
+                        reason = "Face covered / obscured" if p_entry["name"] == "FACE OBSCURED" else "Unauthorized target"
+                        self.log_queue.put(f"[{time.strftime('%H:%M:%S')}] 🚨 INTRUSION: {reason} | ID:{tid}")
 
                     # Secondary alert for prolonged loitering
                     if is_loitering and not p_entry.get("loiter_logged", False):

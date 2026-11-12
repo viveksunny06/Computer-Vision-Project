@@ -475,6 +475,23 @@ class FaceEnrollmentApp:
                 return
             frame_to_save = self.current_frame.copy()
 
+        # Verify that a clear human face is present before enrolling
+        try:
+            from deepface import DeepFace
+            faces = DeepFace.extract_faces(frame_to_save, detector_backend="yunet", enforce_detection=True)
+            if not faces or len(faces) == 0:
+                self.lbl_capture_feedback.config(
+                    text="⚠️ No clear face detected! Please face the camera directly.",
+                    fg=THEME["danger"],
+                )
+                return
+        except Exception:
+            self.lbl_capture_feedback.config(
+                text="⚠️ No clear face detected! Please face the camera directly.",
+                fg=THEME["danger"],
+            )
+            return
+
         safe_name = self._sanitize_name(raw_name)
         person_dir = self._get_person_dir(safe_name)
         os.makedirs(person_dir, exist_ok=True)
