@@ -1,21 +1,27 @@
 # Intelligent Real-Time AI Surveillance & Behavioral Threat Detection System
-## System Architecture, Current Implementation Status & Roadmap
+## System Architecture, Current Implementation Status, Decisions & Roadmap
 
 ---
 
 ## 1. Project Overview & Core Vision
 
-The **Intelligent Real-Time AI Surveillance & Behavioral Threat Detection System** is an autonomous, vision-based security solution designed to convert commodity webcams and CCTV hardware into proactive threat-monitoring systems. 
+The **Intelligent Real-Time AI Surveillance & Behavioral Threat Detection System** is an autonomous, vision-based security platform that converts commodity webcams into proactive threat-monitoring systems.
 
-Unlike traditional passive recording systems that require manual human review after a security incident has occurred, this system autonomously:
-1. **Tracks Human Targets**: Detects and tracks individuals in real time using YOLOv8 multi-object tracking.
-2. **Enforces Virtual Tripwire Boundaries (ROI)**: Allows security operators to interactively draw and adjust dynamic tripwire zones on screen using mouse gestures.
-3. **Verifies Biometric Authorization**: Employs deep facial landmark detection (YuNet) and deep facial feature embeddings (Facenet 512-D) to differentiate verified staff from unauthorized intruders and obscured targets (e.g., individuals with covered faces, masks, or turned heads).
-4. **Detects Behavioral & Safety Anomalies**:
-   - **Intrusion Breaches**: Instant flagging and snapshot capture for unauthorized entry.
-   - **Suspicious Loitering**: Dwell-time monitoring with automated escalation when unauthorized individuals linger in restricted zones.
-   - **Fall & Collapse Detection**: Bounding box aspect-ratio deformation and vertical displacement analysis for rapid safety/medical alerts.
-5. **Maintains Incident Records**: Automatically captures timestamped, full-resolution security snapshots to `./outputs/` and maintains an interactive, real-time security incident log.
+Unlike passive recording, this system autonomously:
+1. **Tracks Human Targets & Body Pose**: Uses YOLOv8-Pose (`yolov8n-pose.pt`, with `yolov8n.pt` fallback) and ByteTrack (`bytetrack.yaml`) to track individuals and extract 17 COCO body keypoints in real time.
+2. **Enforces Virtual Tripwire Boundaries (ROI)**: Operators interactively draw and adjust rectangular tripwire zones on the canvas; ROI membership checks both feet and bounding-box center (`ROI_MODE = "any"`).
+3. **Verifies Biometric Authorization**: Uses OpenCV **YuNet** facial landmark detection + **Facenet512** (512-dimensional embeddings) in an in-memory `FaceDB` engine with Top-3 mean cosine similarity, runner-up margin validation, grace-period multi-frame voting (`2 of 3`), and periodic re-authentication (`10s`).
+4. **Detects Behavioural & Safety Anomalies (Training-Free)**:
+   - **Intrusion / Face Obscured Breaches**: Instant flagging after the 2.5s scanning grace period when unrecognized or face-covered targets remain in the zone.
+   - **Suspicious Loitering**: Escalates unauthorized intrusion when dwell time exceeds `4.0s`.
+   - **Pose-Based Fall / Collapse Detection**: Computes torso tilt angle from shoulders/hips (`> 60°` sustained `>= 1.0s`), with calibrated bounding-box ratio fallback.
+   - **Running / Rapid Movement**: Scale-invariant movement speed (`> 1.5 body-heights/sec` sustained `>= 0.5s`).
+   - **Zone Crowding & Restricted Hours**: Optional configurable `MAX_PEOPLE_IN_ROI` and `RESTRICTED_HOURS`.
+5. **Dispatches Multi-Channel Alerts (`AlertManager`)**:
+   - Plays a local Windows two-tone **Siren** (`assets/siren.wav`, auto-generated if absent).
+   - Sends optional **Telegram** photo alerts (`TG_TOKEN`, `TG_CHAT`).
+   - Saves full-frame annotated JPEG snapshots (with all bounding boxes + ROI) to `outputs/`.
+   - Appends structured audit records to `outputs/incidents.csv` and updates the live GUI log.
 
 ---
 
@@ -23,147 +29,140 @@ Unlike traditional passive recording systems that require manual human review af
 
 ```
                      +----------------------------------------+
-                     |         Live Camera Feed (0)           |
+                     |       Live Camera Feed (Device 0)      |
                      +----------------------------------------+
                                          |
                                          v
                      +----------------------------------------+
-                     |       YOLOv8 Multi-Object Tracker      |
-                     |         (Persist ID, Class 0)          |
+                     |    YOLOv8-Pose + ByteTrack Tracker     |
+                     |    (BBox + 17 COCO Keypoints, Cls 0)   |
                      +----------------------------------------+
                                          |
                        +-----------------+-----------------+
                        |                                   |
                        v                                   v
-             [Target Outside ROI]                 [Target Inside ROI]
+             [Outside ROI (any)]                  [Inside ROI (feet or center)]
                        |                                   |
                        |                     +-------------+-------------+
-                       |                     | Face Verification Worker  |
-                       |                     |   (Background Async)      |
+                       |                     |  Bounded Verify Worker    |
+                       |                     |  (1 Thread, Queue max=8)  |
                        |                     +-------------+-------------+
                        |                                   |
-                       |                        [YuNet Landmark Check]
+                       |                     [FaceDB: YuNet + Facenet512]
+                       |                     [Top-3 Mean + 0.05 Margin  ]
                        |                                   |
-                       |                      +------------+------------+
-                       |                      |                         |
-                       |                 [Face Found]             [No Face / Covered]
-                       |                      |                         |
-                       |             [Facenet Embedding]          [Mark OBSCURED]
-                       |              (Cosine <= 0.40)                  |
-                       |                      |                         |
-                       |            +---------+---------+               |
-                       |            |                   |               |
-                       |      [Match Auth]       [No Match]             |
-                       |            |                   |               |
-                       v            v                   v               v
-                [Outside Zone]  [AUTHORIZED]       [INTRUDER]       [INTRUDER]
-                   (Yellow)       (Green)            (Red)            (Red)
-                                    |                   |               |
-                                    v                   +-------+-------+
-                            [Fall Anomaly?]                     |
-                                    |                           v
-                          +---------+---------+        [Instant Breach Snapshot]
-                          |                   |        [Loitering Timer Active]
-                     [Normal Staff]    [Medical Fall]
-                        (Green)           (Amber)
+                       |             +---------------------+---------------------+
+                       |             |                     |                     |
+                       |      [2/3 MATCH Votes]     [Grace >= 2.5s]      [LOW_QUALITY / ERROR]
+                       |             |                     |                     |
+                       |             v              +------+------+              |
+                       |       [AUTHORIZED]         |             |              |
+                       |        (Re-auth 10s)   [>=50% NO_FACE]  [Else]         (No Vote)
+                       |             |              |             |
+                       |             |              v             v
+                       v             v         [OBSCURED]    [INTRUDER]
+                [Outside Zone]  [AUTHORIZED]     (Red)          (Red)
+                   (Yellow)       (Green)          |              |
+                                     |             +------+-------+
+                                     v                    v
+                         [Pose Fall / Running]   [AlertManager Worker Thread]
+                                                         |
+                                    +--------------------+--------------------+
+                                    |                    |                    |
+                                    v                    v                    v
+                           [JPEG + incidents.csv]   [Siren WAV]       [Telegram Photo]
 ```
 
 ---
 
-## 3. Present Components & File Organization
+## 3. Single-File Consolidation & Submission Structure
+
+To satisfy academic/course evaluation constraints requiring **one single `.py` file**, the entire modular architecture (`config.py`, `theme.py`, `face_db.py`, `alerts.py`, `anomaly.py`, `register_face.py`, and `surveillance.py`) has been unified into a single self-contained executable: **`main.py`**.
 
 ```text
 Computer-Vision-Project/
 │
-├── surveillance.py            # Master surveillance application & real-time GUI
-├── register_face.py           # Personnel face enrollment studio GUI
-├── context.md                 # System architecture, state & roadmap documentation
-├── README.md                  # Quick-start instructions and user guide
-├── requirements.txt           # Project dependencies
-├── yolov8n.pt                 # Ultralytics YOLOv8 nano model weights
+├── main.py                      # [SINGLE FILE] Complete self-contained AI surveillance application
+│                                # (GUI, Face Enrollment Studio, YOLOv8 tracker, Facenet512, AlertManager)
+├── requirements.txt             # Pinned package dependencies
+├── README.md                    # Quickstart, setup, and submission inventory
+├── context.md                   # Comprehensive system report and technical architecture
+├── yolov8n-pose.pt              # Local YOLOv8-Pose nano weights (~6.8 MB)
+├── yolov8n.pt                   # Local YOLOv8 fallback detection weights (~6.5 MB)
 │
-├── known_faces/               # Authorized personnel biometric database
-│   ├── vivek/                 # Multi-angle verified samples of Vivek
-│   ├── Susan/                 # Multi-angle verified samples of Susan
-│   └── ds_model_facenet_...   # Pre-computed YuNet + Facenet biometric datastore (.npz)
+├── cache/                       # embeddings.npz + manifest.json (instant startup cache)
+├── known_faces/                 # Authorized personnel biometric folders (e.g., vivek/, Susan/)
+├── outputs/                     # Incidents log (incidents.csv) & alert snapshots
 │
-└── outputs/                   # Auto-saved breach alert snapshots and incident records
-    ├── ALERT_INTRUDER_...     # Intrusion and face-obscured event snapshots
-    └── ALERT_FALL_...         # Medical/fall anomaly incident snapshots
+└── _archive/                    # Archived legacy modular files (kept as backup, exclude from submission)
+    ├── alerts.py
+    ├── anomaly.py
+    ├── config.py
+    ├── face_db.py
+    ├── theme.py
+    ├── register_face.py
+    └── create_test_assets.py
 ```
 
 ---
 
 ## 4. Current Working Condition & Capabilities
 
-### A. Live Surveillance & Threat Monitor (`surveillance.py`)
-- **Operating Mode**: 100% dedicated live camera processing (Device 0). Pre-recorded video options and mock media fallbacks have been removed for an uncluttered, real-time security workflow.
-- **Display Pipeline**:
-  - Proportional letterboxing dynamically scales the feed to the canvas while strictly preserving native 4:3 or 16:9 aspect ratios.
-  - Drag-and-drop interactive tripwire tool maps canvas mouse coordinates directly to native camera pixels.
-  - Zero-lag Tkinter threading using `queue.Queue` delivers 50–60 FPS video throughput without UI freezes on Python 3.14 / Windows.
-  - Dedicated **Standby Screen** clears the frozen last frame when monitoring is stopped or before camera initialization.
-- **Biometric Recognition Engine**:
-  - Uses **YuNet** (`face_detection_yunet_2023mar.onnx`) for human facial landmark extraction and alignment.
-  - Uses **Facenet** (512-dimensional feature space) for cosine similarity matching against `known_faces/`.
-  - **Asynchronous worker thread**: Recognizes personnel in the background without dropping stream framerate.
-  - **Covered Face Rejection**: If an individual covers their face with a T-shirt, mask, or hand, YuNet detects zero facial landmarks, immediately tagging them as `FACE OBSCURED / INTRUDER` in red.
-  - **Different Person Discrimination**: Different faces yield cosine distances $> 0.40$ and are locked as `UNAUTHORIZED INTRUDER`.
-- **Behavioral & Safety Anomaly Classification**:
-  - **Authorized Staff**: Displayed in permanent **Emerald Green** (`AUTHORIZED: <Name>`). They are never falsely penalized for normal loitering.
-  - **Unauthorized Intruders**: Displayed in **Crimson Red** immediately upon entering the tripwire zone with live dwell time displayed on-screen (`UNAUTHORIZED INTRUDER (X.Xs)`).
-  - **Immediate Breach Snapshot**: Captures full-resolution security snapshots to `outputs/` the instant an unauthorized or obscured person breaches the tripwire.
-  - **Loitering Escalation**: Flags `SUSPICIOUS LOITERING` if an intruder stays beyond `LOITERING_THRESHOLD_SEC` (4.0s).
-  - **Fall / Distress Detection**: Calibrated with `FALL_ASPECT_RATIO_THRESHOLD = 1.65`, vertical grounding filter (`by2 > 0.65 * frame_h`), and minimum bounding area filter ($>8000\text{ px}$) to prevent false fall alerts when users sit close to their desk webcam.
+### A. Live Surveillance & Threat Monitor (`main.py`)
+- **Per-Track State Machine**: Eliminates single-frame false positives via `SCANNING` (2.5s grace period), `2-of-3` vote quorum (`VOTE_WINDOW = 3`, `VOTES_REQUIRED = 2`), and 10s periodic re-authentication (`REAUTH_INTERVAL_SEC`) to catch ID swaps. Tracks unseen for `30s` are purged automatically.
+- **Explicit Failure Separation**: `FaceDB` cleanly distinguishes `MATCH`, `NO_MATCH`, `NO_FACE`, `LOW_QUALITY` (`face_px < 48`), and `ERROR`. System/runtime errors never masquerade as `FACE OBSCURED`.
+- **Single Verification Worker**: One long-lived daemon thread processes verification requests via an in-memory bounded `queue.Queue(maxsize=8)` with zero temp JPEGs on disk.
+- **ROI & Display**: Proportional letterboxing preserves 4:3 / 16:9 webcam aspect ratios; ROI membership (`ROI_MODE = "any"`) checks both bounding-box center and feet so seated desk subjects trigger accurately. Clean Standby screen clears the last frame on stop.
+- **HUD & Snapshots**: ASCII-only OpenCV badge labels clamped inside frame bounds; snapshots are captured after all bounding boxes are drawn and include the ROI overlay. Auto-reloads `FaceDB` within ~2s when `known_faces/` changes without resetting breach flags.
 
 ### B. Personnel Face Enrollment Studio (`register_face.py`)
-- **Interface**: Unified Slate 900/800 design system matching `surveillance.py`.
-- **Manual Shutter Capture**: Users can capture photos at their own pace across multiple angles, tilts, and expressions.
-- **Case-Sensitive Folder Persistence**: Appends new photos to existing personnel folders (e.g., `known_faces/vivek/vivek_1.jpg`, `vivek_2.jpg`, etc.).
-- **Enrollment Validation**: Integrated YuNet landmark validation checks each frame before saving. It refuses to enroll blank frames or covered faces.
-- **Database Management**: Live directory listing, photo counters, deletion, and auto-invalidation of stale representation caches (`.pkl` and `.npz`).
-- **Safe Exit**: Includes a dedicated `✕ Exit Studio` button to cleanly release the camera handle.
+- **Thread-Safe Queue Preview**: Camera thread communicates strictly via `frame_queue`, `status_queue`, and `capture_result_queue`, drained on the Tk main thread (`_poll_queues`), with safe `thread.join()` hardware shutdown.
+- **Background Quality Validation**: Rejects frames with 0 or >1 faces, confidence `< 0.90`, face width `< 80 px`, Laplacian sharpness `< 60.0`, or near-duplicates (`cosine sim > 0.98`).
+- **Guided Capture & Clean Crops**: Cycles through 7 pose prompts (`Front`, tilts, `Smile`, etc.) with `n / 10 recommended` guidance, saves 40%-padded face crops verified with `FaceDB.embed`, pre-warms `cache/embeddings.npz`, and handles NTFS case-insensitivity plus reserved Windows filenames.
+
+### C. Biometric Calibration Results (`tools/calibrate_threshold.py`)
+Run against the enrolled database (`40` genuine leave-one-out pairs + `40` cross-person impostor pairs + Puneeth probe):
+- **Genuine Distances (`Facenet512` + `YuNet`, Top-3)**: `[0.0753, 0.3466]`, mean = `0.1671`.
+- **Impostor Distances (cross-person)**: `[0.4797, 0.9815]`, mean = `0.6763` (Puneeth vs. Vivek = `0.5376`).
+- **EER**: `0.00%` at threshold **`0.35`** (`FAR = 0.00%`, `FRR = 0.00%`).
 
 ---
 
-## 5. What Was Expected vs. What Was Discovered (Lessons Learned)
+## 5. Decisions Recorded
 
-| Issue Discovered | Root Cause Identified | Resolution Implemented |
+| Setting / Choice | Decision Made | Rationale |
 | :--- | :--- | :--- |
-| **OpenCV `CascadeClassifier` Crash** | OpenCV 5.0.0 on Python 3.14 omits Haar Cascades, causing default DeepFace calls to fail silently. | Upgraded detector backend to **YuNet ONNX**, completely eliminating cascade dependencies. |
-| **Covered Face Tagged as "Vivek"** | 1. `detector_backend="skip"` passed raw room pixels to Facenet without face detection.<br>2. 3 non-face photos (`vivek_6.jpg`, `vivek_38.jpg`, `vivek_39.jpg`) were enrolled in `known_faces/vivek/`. | 1. Switched to YuNet with `enforce_detection=True`.<br>2. Purged non-face photos from `known_faces/`.<br>3. Added face verification check to `register_face.py`. |
-| **Sitting at Desk Flagged as "Fall"** | Close-up webcam perspective produces an upper-body aspect ratio of $\sim 1.33$, exceeding the previous $1.25$ threshold. | Raised threshold to $1.65$, added vertical grounding filter ($by_2 > 0.65 \times H$), and minimum bounding area check. |
-| **Camera Feed Aspect Ratio Distortion** | Canvas previously resized all video streams to a fixed $760 \times 480$, squishing 4:3 and 16:9 webcam inputs. | Implemented proportional scaling and dynamic letterboxing with coordinate remapping. |
-| **Thread Crashes on Stop & MSMF Spam** | Calling `cap.release()` while worker thread was inside `cap.read()` caused MSMF driver warnings and `NoneType.set()` errors. | Added `video_thread.join(timeout=0.3)` and removed legacy video seek commands. |
+| **Face Recognition Model** | `Facenet512` (512-D) + `yunet` | 128-D `Facenet` collapsed Puneeth and Vivek to cosine dist `0.1513`; `Facenet512` separated them cleanly (`0.1429` vs `0.5376`). |
+| **Distance Threshold & Margin** | `FACE_DISTANCE_THRESH = 0.35`, `FACE_MATCH_MARGIN = 0.05`, `FACE_TOPK = 3` | Calibrated on `outputs/calibration/roc.csv` yielding `0.00% EER`; Top-3 + margin stops single outlier photos from falsely authorizing strangers. |
+| **ROI Membership Mode** | `ROI_MODE = "any"` (feet or center) | Seated/close-up webcam subjects often have bottom-edge `by2` outside the tripwire rectangle while torso center is clearly inside. |
+| **Pose Model & Fall Rule** | `yolov8n-pose.pt` torso angle `> 60°` sustained `>= 1.0s` | Eliminates false fall alerts caused by seated upper-body bounding boxes (`W/H ~ 1.33`). |
+| **Embedding Cache Location** | `cache/embeddings.npz` + `cache/manifest.json` | Keeps `known_faces/` clean of DeepFace `.pkl/.npz` artifacts and supports fast incremental delta updates. |
 
 ---
 
-## 6. What Is Yet to Be Done (Roadmap & Next Steps)
+## 6. Lessons Learned (Resolved Issues)
 
-### Phase 1: Near-Term Enhancements (Model & Detection Robustness)
-- [ ] **Multi-Camera Support**: Add support for switching between multiple USB/IP cameras or RTSP video streams.
-- [ ] **Temporal Face Verification Smoothing**: Run face verification across 3 consecutive frames with a voting buffer (e.g., 2 out of 3 matches required) to eliminate single-frame lighting or motion blur anomalies.
-- [ ] **Tripwire Exclusion Zones**: Allow operators to define "Ignore Zones" (e.g., windows, ceiling fans, or computer monitors) to avoid tracking irrelevant background motion.
-- [ ] **Pose-Based Fall Detection**: Upgrade from bounding box aspect-ratio heuristics to **YOLOv8-Pose** (keypoint detection: head, shoulders, hips, knees, ankles) for medical-grade fall classification regardless of camera angle.
-
-### Phase 2: Notification & Remote Alerting
-- [ ] **Audio/Siren Alarm**: Optional audible beep or audio alert when an unauthorized intrusion occurs.
-- [ ] **Telegram / Email / Webhook Alerts**: Automatically dispatch instant breach snapshots and incident descriptions to security personnel via Telegram Bot or SMTP email.
-- [ ] **Headless Edge Server Mode**: Provide a CLI-only daemon runner (e.g., `python surveillance_headless.py --camera 0 --alert-webhook <url>`) for deployment on headless Linux edge servers or NVIDIA Jetson devices.
-
-### Phase 3: Analytics & Database Scaling
-- [ ] **Vector Database Indexing (FAISS / ChromaDB)**: If personnel database grows beyond 500+ individuals, integrate FAISS for sub-millisecond vector similarity search.
-- [ ] **Searchable Incident Log**: Add date/time and category filters (Intruder, Loitering, Fall) to the GUI incident log.
-- [ ] **Snapshot Auto-Pruning**: Implement a retention policy to automatically archive or delete snapshots older than $N$ days to manage disk space.
+1. **128-D `Facenet` + Outlier Matching False Positives**: Switching to `Facenet512` (512-D), Top-3 gallery averaging, runner-up margin (`0.05`), and `2-of-3` multi-frame voting eliminated cross-person false positives (Puneeth tagged as Vivek).
+2. **Skipped Detector & Non-Face Enrollment Leakage**: Enforcing `yunet` facial landmark detection (`enforce_detection=True`) in both verification and enrollment ensures covered/obscured faces (`FACE OBSCURED`) can never match background or clothing embeddings.
+3. **Silent Verification Stalls & Single-Shot Lock-In**: Explicit `VerifyResult` error types (`NO_FACE`, `LOW_QUALITY`, `ERROR`) and a `SCANNING` grace state prevent momentary motion blur from permanently locking an authorized person as an intruder.
+4. **Thread-Safety & Camera Lifecycle**: Queue-only Tk UI updates across both GUIs and `join()` before `cap.release()` eliminated Windows MSMF errors and `RuntimeError: main thread is not in main loop`.
 
 ---
 
-## 7. Key Technology Stack
+## 7. Roadmap (Completed & Remaining Optional Work)
 
-- **Language & Runtime**: Python 3.14 (AMD64)
-- **Computer Vision & Processing**: OpenCV (`opencv-python 5.0.0.93`), NumPy, Pillow (PIL)
-- **Object Detection & Tracking**: Ultralytics YOLOv8 (`yolov8n.pt`, PyTorch)
-- **Biometric Landmark Detection**: OpenCV YuNet ONNX (`face_detection_yunet_2023mar.onnx`)
-- **Facial Feature Representation**: DeepFace with Facenet (512-dimensional biometric embeddings)
-- **Graphical User Interface**: Python Tkinter with custom ttk styling and multi-threaded `queue.Queue` event dispatchers
+### Completed (Phases 1–5 Core)
+- [x] Centralized `config.py` (with `config.json` persistence) & shared `theme.py`
+- [x] `FaceDB` (`Facenet512` + `YuNet`, Top-K + margin, incremental `cache/`)
+- [x] Per-track verification state machine (`OUTSIDE | SCANNING | AUTHORIZED | INTRUDER | OBSCURED`), grace period, `2/3` voting, `10s` re-auth, `30s` track purge
+- [x] `AlertManager` (Windows siren WAV, `incidents.csv`, annotated JPEG snapshots, Telegram photo alerts, 30-day pruning, GUI toggles & Test Alert)
+- [x] Thread-safe `register_face.py` with background quality validation, guided poses, 40% crops & NTFS name safety
+- [x] Training-free `yolov8n-pose` torso-angle fall detection, scale-invariant running detection, crowding & after-hours checks
+- [x] Quantitative threshold calibration (`tools/calibrate_threshold.py`) + pinned `requirements.txt`, `.gitignore`, and `README.md`
 
+### Optional Future Enhancements
+- [ ] **Whole-frame YuNet Face Association (`B3`)**: Run YuNet periodically on the full frame and match faces to person boxes by containment.
+- [ ] **Liveness / Anti-Spoofing (`B4`)**: Add depth/texture liveness checks to defeat printed or phone-screen photo replays.
+- [ ] **Abandoned Object Detector (`D3`)**: Second COCO detector pass for unattended backpacks/suitcases.
+- [ ] **Line-Crossing Tripwire & Multi-Point Polygon ROI (`D5`, `D6`)**: Directional segment crossing mode and arbitrary polygon exclusion zones.
+- [ ] **Tk-Free Pipeline Split & Offline Clip Evaluator (`G1`, `F2`)**: Extract `pipeline.py` for headless CLI deployment and automated MP4 benchmark evaluation.
