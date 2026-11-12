@@ -185,28 +185,449 @@ _apply_config_overrides()
 
 
 # ===========================================================================
-# 2. DESIGN SYSTEM & COLOR THEME (Slate 900 / 800)
+# 2. DESIGN SYSTEM
+#    One neutral palette, one accent, semantic colours reserved for state.
+#    Type scale (px-ish pt): 9 caption | 10 body | 11 emphasis | 12 title | 20 numerals
+#    Spacing scale: 4 / 8 / 12 / 16 / 20.  Card padding 16, gap between cards 12.
 # ===========================================================================
 THEME = {
-    "bg_main": "#0f172a",        # Slate 900
-    "bg_surface": "#1e293b",     # Slate 800
-    "bg_card": "#334155",        # Slate 700
-    "bg_input": "#0f172a",       # Slate 900
-    "border": "#475569",         # Slate 600
-    "border_light": "#64748b",   # Slate 500
-    "text_primary": "#f8fafc",   # Slate 50
-    "text_secondary": "#94a3b8", # Slate 400
-    "text_muted": "#64748b",     # Slate 500
-    "primary": "#2563eb",        # Royal Blue 600
-    "primary_hover": "#1d4ed8",  # Royal Blue 700
-    "success": "#16a34a",        # Emerald 600
-    "success_hover": "#15803d",  # Emerald 700
-    "danger": "#dc2626",         # Crimson 600
-    "danger_hover": "#b91c1c",   # Crimson 700
-    "warning": "#d97706",        # Amber 600
-    "neutral_btn": "#475569",    # Slate 600
-    "neutral_hover": "#334155",  # Slate 700
+    # surfaces
+    "bg_main": "#0d1117",        # window
+    "bg_surface": "#161b22",     # cards / panels
+    "bg_raised": "#21262d",      # buttons, pills
+    "bg_card": "#21262d",        # (legacy key) same as bg_raised
+    "bg_input": "#0d1117",       # inset fields, log
+    "bg_video": "#05080c",
+    "selection": "#1c2d44",
+    # lines
+    "border": "#30363d",
+    "border_light": "#484f58",
+    # text
+    "text_primary": "#e6edf3",
+    "text_secondary": "#9da7b3",
+    "text_muted": "#7d8590",
+    # accent (primary action only)
+    "primary": "#2563eb",
+    "primary_hover": "#1d4ed8",
+    "info": "#58a6ff",           # focus ring, selection accents
+    "zone": "#38bdf8",           # restricted-zone overlay
+    # state (never decorative)
+    "success": "#3fb950",
+    "success_hover": "#2ea043",
+    "warning": "#d29922",
+    "danger": "#f85149",         # text / dot on dark
+    "danger_hover": "#da3633",
+    "danger_solid": "#c62d2d",   # filled button with white text
+    "danger_solid_hover": "#a82424",
+    "neutral_btn": "#21262d",
+    "neutral_hover": "#2d333b",
 }
+
+_FONTS: Dict[str, str] = {"ui": "Segoe UI", "semi": "Segoe UI Semibold", "mono": "Consolas"}
+
+
+def init_ui_fonts() -> None:
+    """Pick the best installed UI/mono families once a Tk root exists."""
+    import tkinter.font as tkfont
+
+    families = set(tkfont.families())
+    for cand in ("Segoe UI", "Inter", "Helvetica Neue", "Arial", "DejaVu Sans"):
+        if cand in families:
+            _FONTS["ui"] = cand
+            break
+    _FONTS["semi"] = "Segoe UI Semibold" if "Segoe UI Semibold" in families else _FONTS["ui"]
+    for cand in ("Cascadia Mono", "Consolas", "DejaVu Sans Mono", "Courier New"):
+        if cand in families:
+            _FONTS["mono"] = cand
+            break
+
+
+def F(size: int = 10, weight: str = "normal") -> Tuple:
+    """UI font tuple. weight='bold' maps to Segoe UI Semibold when available."""
+    if weight == "bold":
+        if _FONTS["semi"] != _FONTS["ui"]:
+            return (_FONTS["semi"], size)
+        return (_FONTS["ui"], size, "bold")
+    return (_FONTS["ui"], size)
+
+
+def FM(size: int = 9) -> Tuple:
+    return (_FONTS["mono"], size)
+
+
+def apply_ttk_styles() -> None:
+    T = THEME
+    style = ttk.Style()
+    style.theme_use("clam")
+
+    # Arrow-less slim scrollbar
+    style.layout(
+        "Slim.Vertical.TScrollbar",
+        [("Vertical.Scrollbar.trough", {"sticky": "ns", "children": [("Vertical.Scrollbar.thumb", {"expand": "1", "sticky": "nswe"})]})],
+    )
+    style.configure(
+        "Slim.Vertical.TScrollbar",
+        background=T["border_light"], troughcolor=T["bg_input"], bordercolor=T["bg_input"],
+        lightcolor=T["border_light"], darkcolor=T["border_light"], width=8, borderwidth=0, relief="flat",
+    )
+    style.map("Slim.Vertical.TScrollbar", background=[("active", T["text_muted"])])
+
+    # Borderless list
+    style.layout("People.Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+    style.configure(
+        "People.Treeview",
+        background=T["bg_input"], fieldbackground=T["bg_input"], foreground=T["text_primary"],
+        borderwidth=0, relief="flat", rowheight=34, font=F(10),
+    )
+    style.map(
+        "People.Treeview",
+        background=[("selected", T["selection"])],
+        foreground=[("selected", T["text_primary"])],
+    )
+
+
+def draw_person_badge(frame: np.ndarray, bbox: Tuple[int, int, int, int], tid: int, text: str, color: Tuple[int, int, int]) -> None:
+    """Draw a bounding box and a readable label chip on a BGR frame (ASCII text only)."""
+    bx1, by1, bx2, by2 = bbox
+    fh, fw = frame.shape[:2]
+    cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2, cv2.LINE_AA)
+
+    label = f"#{tid}  {text}"
+    scale, thick, pad = 0.5, 1, 6
+    (lw, lh), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+    chip_w, chip_h = lw + 2 * pad, lh + 2 * pad
+    x1 = int(max(0, min(bx1, fw - chip_w)))
+    y1 = by1 - chip_h if (by1 - chip_h) >= 0 else by1
+    y1 = int(max(0, min(y1, fh - chip_h)))
+    b, g, r = color
+    luminance = 0.114 * b + 0.587 * g + 0.299 * r
+    fg = (255, 255, 255) if luminance < 125 else (22, 27, 34)
+    cv2.rectangle(frame, (x1, y1), (x1 + chip_w, y1 + chip_h), color, -1)
+    cv2.putText(frame, label, (x1 + pad, y1 + pad + lh), cv2.FONT_HERSHEY_SIMPLEX, scale, fg, thick, cv2.LINE_AA)
+
+
+# ---------------------------------------------------------------------------
+# Widgets
+# ---------------------------------------------------------------------------
+class Button(tk.Label):
+    """Flat button with variants: primary | secondary | ghost | danger | danger_text.
+
+    Supports .config(text=..., state=..., variant=...). Keyboard accessible (Tab, Enter, Space).
+    """
+
+    def __init__(self, master, text: str, command: Optional[Callable[[], None]] = None, variant: str = "secondary", width: Optional[int] = None, **kw):
+        self._variant = variant
+        self._command = command
+        self._disabled = False
+        self._hover = False
+        self._pressed = False
+        self._parent_bg = master.cget("bg")
+        opts: Dict[str, Any] = dict(
+            text=text, font=F(10, "bold"), padx=14, pady=6, bd=0, relief="flat",
+            cursor="hand2", takefocus=1, highlightthickness=2, anchor="center",
+        )
+        if width:
+            opts["width"] = width
+        opts.update(kw)
+        super().__init__(master, **opts)
+        self.bind("<Enter>", lambda e: self._set_hover(True))
+        self.bind("<Leave>", lambda e: self._set_hover(False))
+        self.bind("<ButtonPress-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Return>", lambda e: self.invoke())
+        self.bind("<space>", lambda e: self.invoke())
+        self.bind("<FocusIn>", lambda e: super(Button, self).configure(highlightbackground=THEME["info"]))
+        self.bind("<FocusOut>", lambda e: self._paint())
+        self._paint()
+
+    def _palette(self) -> Tuple[str, str]:
+        T = THEME
+        table = {
+            "primary": (T["primary"], T["primary_hover"], "#ffffff"),
+            "secondary": (T["bg_raised"], T["neutral_hover"], T["text_primary"]),
+            "ghost": (self._parent_bg, T["bg_raised"], T["text_secondary"]),
+            "danger": (T["danger_solid"], T["danger_solid_hover"], "#ffffff"),
+            "danger_text": (T["bg_raised"], T["neutral_hover"], T["danger"]),
+        }
+        bg, hover_bg, fg = table[self._variant]
+        if self._disabled:
+            return (self._parent_bg if self._variant == "ghost" else T["bg_raised"]), T["text_muted"]
+        if self._pressed or self._hover:
+            bg = hover_bg
+            if self._variant == "ghost":
+                fg = T["text_primary"]
+        return bg, fg
+
+    def _paint(self) -> None:
+        bg, fg = self._palette()
+        tk.Label.configure(self, bg=bg, fg=fg, highlightbackground=bg, cursor="arrow" if self._disabled else "hand2")
+
+    def _set_hover(self, value: bool) -> None:
+        self._hover = value
+        self._paint()
+
+    def _on_press(self, _e) -> None:
+        self._pressed = True
+        self._paint()
+
+    def _on_release(self, e) -> None:
+        was = self._pressed
+        self._pressed = False
+        self._paint()
+        if was and 0 <= e.x < self.winfo_width() and 0 <= e.y < self.winfo_height():
+            self.invoke()
+
+    def invoke(self) -> None:
+        if self._command and not self._disabled:
+            self._command()
+
+    def configure(self, cnf=None, **kw):
+        if cnf:
+            kw.update(cnf)
+        variant = kw.pop("variant", None)
+        state = kw.pop("state", None)
+        for legacy in ("bg", "background", "fg", "foreground", "activebackground", "activeforeground"):
+            kw.pop(legacy, None)
+        if variant:
+            self._variant = variant
+        if state is not None:
+            self._disabled = state == tk.DISABLED
+        if kw:
+            tk.Label.configure(self, **kw)
+        self._paint()
+
+    config = configure
+
+
+class StatusPill(tk.Frame):
+    """Single source of truth for system state: coloured dot + sentence-case text.
+
+    .config(text="● SYSTEM READY (2 People)", fg=color) is accepted and normalised.
+    """
+
+    _REPLACE = (("Yolo load error", "Model load error"), (" db", " database"), ("...", "…"))
+
+    def __init__(self, master, text: str = "", fg: Optional[str] = None):
+        T = THEME
+        super().__init__(master, bg=T["bg_raised"], highlightthickness=1, highlightbackground=T["border"])
+        self._dot = tk.Canvas(self, width=8, height=8, bg=T["bg_raised"], highlightthickness=0)
+        self._dot.pack(side=tk.LEFT, padx=(10, 7), pady=7)
+        self._dot_id = self._dot.create_oval(0, 0, 8, 8, fill=fg or T["text_muted"], outline="")
+        self._lbl = tk.Label(self, font=F(9, "bold"), fg=T["text_primary"], bg=T["bg_raised"])
+        self._lbl.pack(side=tk.LEFT, padx=(0, 12))
+        self.configure(text=text, fg=fg or T["text_muted"])
+
+    @classmethod
+    def _norm(cls, text: str) -> str:
+        s = text.replace("●", "").strip().capitalize()
+        for old, new in cls._REPLACE:
+            s = s.replace(old, new)
+        return s
+
+    def configure(self, cnf=None, **kw):
+        if cnf:
+            kw.update(cnf)
+        text = kw.pop("text", None)
+        fg = kw.pop("fg", kw.pop("foreground", None))
+        if text is not None:
+            self._lbl.configure(text=self._norm(text))
+        if fg is not None:
+            self._dot.itemconfigure(self._dot_id, fill=fg)
+        if kw:
+            tk.Frame.configure(self, **kw)
+
+    config = configure
+
+
+class ProgressBar(tk.Canvas):
+    def __init__(self, master, height: int = 4):
+        super().__init__(master, height=height, bg=THEME["bg_surface"], highlightthickness=0, bd=0)
+        self._value, self._max = 0, 1
+        self.bind("<Configure>", lambda e: self._redraw())
+
+    def set(self, value: int, maximum: int) -> None:
+        self._value, self._max = max(0, value), max(1, maximum)
+        self._redraw()
+
+    def _redraw(self) -> None:
+        self.delete("all")
+        w, h = self.winfo_width(), self.winfo_height()
+        self.create_rectangle(0, 0, w, h, fill=THEME["bg_raised"], outline="")
+        frac = min(1.0, self._value / self._max)
+        color = THEME["success"] if self._value >= self._max else THEME["primary"]
+        if frac > 0:
+            self.create_rectangle(0, 0, int(w * frac), h, fill=color, outline="")
+
+
+class SegmentBar(tk.Canvas):
+    """Row of equal segments; segments before `current` are done, `current` is active."""
+
+    def __init__(self, master, count: int, height: int = 4):
+        super().__init__(master, height=height, bg=THEME["bg_surface"], highlightthickness=0, bd=0)
+        self._count, self._current = count, 0
+        self.bind("<Configure>", lambda e: self._redraw())
+
+    def set(self, current: int) -> None:
+        self._current = current
+        self._redraw()
+
+    def _redraw(self) -> None:
+        self.delete("all")
+        w, h, gap = self.winfo_width(), self.winfo_height(), 4
+        seg = (w - gap * (self._count - 1)) / max(1, self._count)
+        for i in range(self._count):
+            x1 = i * (seg + gap)
+            color = THEME["border_light"]
+            if i < self._current:
+                color = THEME["primary"]
+            elif i == self._current:
+                color = THEME["info"]
+            self.create_rectangle(x1, 0, x1 + seg, h, fill=color, outline="")
+
+
+class Notice(tk.Frame):
+    """Reserved-height feedback line with a coloured left bar (no emoji)."""
+
+    def __init__(self, master, height: int = 44):
+        super().__init__(master, bg=THEME["bg_surface"], height=height)
+        self.pack_propagate(False)
+        self._bar = tk.Frame(self, bg=THEME["bg_surface"], width=3)
+        self._bar.pack(side=tk.LEFT, fill=tk.Y)
+        self._lbl = tk.Label(self, text="", font=F(9), fg=THEME["text_secondary"], bg=THEME["bg_surface"], anchor="nw", justify=tk.LEFT)
+        self._lbl.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(10, 0))
+        self.bind("<Configure>", lambda e: self._lbl.configure(wraplength=max(100, e.width - 24)))
+
+    def configure(self, cnf=None, **kw):
+        if cnf:
+            kw.update(cnf)
+        text = kw.pop("text", None)
+        fg = kw.pop("fg", kw.pop("foreground", None))
+        if text is not None:
+            clean = re.sub(r"^[\s\u2190-\u2BFF\U0001F000-\U0001FFFF\uFE0F]+", "", text)
+            self._lbl.configure(text=clean)
+            if not clean:
+                self._bar.configure(bg=THEME["bg_surface"])
+        if fg is not None and self._lbl.cget("text"):
+            self._bar.configure(bg=THEME["border_light"] if fg == THEME["text_secondary"] else fg)
+            self._lbl.configure(fg=THEME["text_primary"])
+        if kw:
+            tk.Frame.configure(self, **kw)
+
+    config = configure
+
+
+_LOG_EVENTS: Dict[str, Tuple[str, str]] = {
+    "INTRUSION": ("Intrusion", "danger"),
+    "ALERT": ("Alert", "danger"),
+    "SAFETY ALERT": ("Fall", "danger"),
+    "LOITERING": ("Loitering", "warning"),
+    "RUNNING": ("Running", "warning"),
+    "OVERCROWDING": ("Crowding", "warning"),
+    "AFTER_HOURS_PRESENCE": ("After hours", "warning"),
+    "TEST ALERT": ("Test", "info"),
+    "INFO": ("Info", "muted"),
+    "SYSTEM": ("System", "muted"),
+}
+_LOG_RE = re.compile(r"^\[(?P<t>[^\]]+)\]\s*(?P<body>.*)$")
+
+
+def parse_log_entry(entry: str) -> Tuple[str, str, str, str]:
+    """'[12:00:01] 🚨 INTRUSION: Unauthorized entry | ID:3' -> (time, label, severity, detail)."""
+    m = _LOG_RE.match(entry.strip())
+    ts, body = (m.group("t"), m.group("body")) if m else (time.strftime("%H:%M:%S"), entry)
+    body = re.sub(r"^[^\w]+", "", body)
+    head, sep, rest = body.partition(":")
+    key = head.strip().upper()
+    if sep and key in _LOG_EVENTS:
+        label, sev = _LOG_EVENTS[key]
+        detail = rest.strip()
+    elif sep and len(head) <= 24:
+        label, sev, detail = head.strip().capitalize(), "muted", rest.strip()
+    else:
+        label, sev, detail = "System", "muted", body.strip()
+    detail = detail.replace("->", "→").replace(" | ", "  ·  ")
+    detail = re.sub(r"\bID:(\d+)", r"ID \1", detail)
+    return ts, label, sev, detail
+
+
+class LogView(tk.Frame):
+    """Read-only incident feed, newest first: coloured event + right-aligned time, detail below."""
+
+    MAX_ENTRIES = 150
+
+    def __init__(self, master):
+        T = THEME
+        super().__init__(master, bg=T["bg_input"], highlightthickness=1, highlightbackground=T["border"])
+        self.text = tk.Text(
+            self, bg=T["bg_input"], fg=T["text_primary"], relief="flat", bd=0, highlightthickness=0,
+            wrap="word", cursor="arrow", padx=12, pady=4, state="disabled", insertwidth=0, takefocus=0,
+            selectbackground=T["selection"], inactiveselectbackground=T["selection"], font=F(10),
+        )
+        self._scroll = ttk.Scrollbar(self, orient="vertical", command=self.text.yview, style="Slim.Vertical.TScrollbar")
+        self.text.configure(yscrollcommand=self._on_scroll)
+        self.text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.text.tag_configure("head", spacing1=12)
+        self.text.tag_configure("time", font=FM(9), foreground=T["text_muted"])
+        self.text.tag_configure("body", font=F(10), foreground=T["text_primary"], spacing3=2)
+        for sev, color in (("danger", T["danger"]), ("warning", T["warning"]), ("info", T["info"]), ("muted", T["text_secondary"])):
+            self.text.tag_configure(f"sev_{sev}", font=F(10, "bold"), foreground=color)
+
+        self._empty = tk.Label(self, text="No incidents recorded", font=F(10), fg=T["text_muted"], bg=T["bg_input"])
+        self._empty.place(relx=0.5, rely=0.5, anchor="center")
+        self._count = 0
+        self.text.bind("<Configure>", self._on_resize)
+
+    def _on_scroll(self, first, last) -> None:
+        self._scroll.set(first, last)
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self._scroll.pack_forget()
+        else:
+            self._scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+    def _on_resize(self, event) -> None:
+        self.text.configure(tabs=(max(event.width - 26, 120), "right"))
+
+    def add(self, entry: str) -> None:
+        ts, label, sev, detail = parse_log_entry(entry)
+        self._empty.place_forget()
+        self.text.configure(state="normal")
+        self.text.insert(
+            "1.0",
+            label, ("head", f"sev_{sev}"),
+            f"\t{ts}\n", ("head", "time"),
+            f"{detail}\n", ("body",),
+        )
+        self._count += 1
+        if self._count > self.MAX_ENTRIES:
+            self.text.delete(f"{self.MAX_ENTRIES * 2 + 1}.0", "end")
+            self._count = self.MAX_ENTRIES
+        self.text.configure(state="disabled")
+
+    def clear(self) -> None:
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.configure(state="disabled")
+        self._count = 0
+        self._empty.place(relx=0.5, rely=0.5, anchor="center")
+
+
+def make_card(master, padx: int = 16, pady: int = 14) -> tk.Frame:
+    return tk.Frame(master, bg=THEME["bg_surface"], highlightthickness=1, highlightbackground=THEME["border"], highlightcolor=THEME["border"], padx=padx, pady=pady)
+
+
+def make_input(master) -> Tuple[tk.Frame, tk.Entry]:
+    """Single-line input with 1px border that turns accent-coloured on focus."""
+    T = THEME
+    wrap = tk.Frame(master, bg=T["border"])
+    entry = tk.Entry(
+        wrap, font=F(11), bg=T["bg_input"], fg=T["text_primary"], insertbackground=T["text_primary"],
+        relief="flat", bd=0, highlightthickness=0, selectbackground=T["primary"], selectforeground="#ffffff",
+    )
+    entry.pack(fill=tk.X, padx=1, pady=1, ipady=7, ipadx=8)
+    entry.bind("<FocusIn>", lambda e: wrap.configure(bg=T["info"]))
+    entry.bind("<FocusOut>", lambda e: wrap.configure(bg=T["border"]))
+    return wrap, entry
 
 
 # ===========================================================================
@@ -830,9 +1251,11 @@ class FaceEnrollmentDialog:
             self.window = tk.Toplevel(master)
             self._is_toplevel = True
 
-        self.window.title("Personnel Enrollment Studio")
+        self.window.title("Enroll Personnel")
         self.window.geometry("1120x740")
         self.window.minsize(980, 660)
+        self._has_frame = False
+        self._placeholder = ("Starting camera...", "")
         self.window.configure(bg=THEME["bg_main"])
         self.window.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -858,283 +1281,140 @@ class FaceEnrollmentDialog:
         self._refresh_enrolled_list()
 
     def _configure_styles(self) -> None:
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(
-            "Enroll.TEntry",
-            fieldbackground=THEME["bg_input"],
-            foreground=THEME["text_primary"],
-            insertcolor=THEME["text_primary"],
-            borderwidth=1,
-            relief="solid",
-        )
+        init_ui_fonts()
+        apply_ttk_styles()
 
     def _build_ui(self) -> None:
-        # Header
-        header = tk.Frame(self.window, bg=THEME["bg_surface"], height=64, padx=24)
+        T = THEME
+
+        # ---- Title bar -----------------------------------------------------
+        header = tk.Frame(self.window, bg=T["bg_surface"], height=52)
         header.pack(fill=tk.X, side=tk.TOP)
         header.pack_propagate(False)
+        tk.Frame(self.window, bg=T["border"], height=1).pack(fill=tk.X)
 
-        header_left = tk.Frame(header, bg=THEME["bg_surface"])
-        header_left.pack(side=tk.LEFT, fill=tk.Y)
+        tk.Label(header, text="Enroll Personnel", font=F(12, "bold"), fg=T["text_primary"], bg=T["bg_surface"]).pack(side=tk.LEFT, padx=(20, 0))
+        self.lbl_cam_indicator = StatusPill(header, text="Connecting...", fg=T["text_muted"])
+        self.lbl_cam_indicator.pack(side=tk.RIGHT, padx=(0, 20))
 
-        tk.Label(
-            header_left,
-            text="Personnel Enrollment Studio",
-            font=("Segoe UI", 15, "bold"),
-            fg=THEME["text_primary"],
-            bg=THEME["bg_surface"],
-        ).pack(side=tk.LEFT, pady=16)
-
-        tk.Label(
-            header_left,
-            text=" |  Authorized Face Database Management",
-            font=("Segoe UI", 11),
-            fg=THEME["text_secondary"],
-            bg=THEME["bg_surface"],
-        ).pack(side=tk.LEFT, pady=16)
-
-        btn_exit = tk.Button(
-            header,
-            text="✕  Exit Studio",
-            font=("Segoe UI", 10, "bold"),
-            bg=THEME["neutral_btn"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["danger"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            padx=16,
-            pady=6,
-            command=self.close,
-        )
-        btn_exit.pack(side=tk.RIGHT, pady=14)
-
-        # Content view
-        content = tk.Frame(self.window, bg=THEME["bg_main"], padx=24, pady=20)
+        content = tk.Frame(self.window, bg=T["bg_main"], padx=16, pady=16)
         content.pack(fill=tk.BOTH, expand=True)
 
-        # Left Panel (Camera Preview)
-        left_panel = tk.Frame(content, bg=THEME["bg_surface"], padx=16, pady=16)
-        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 16))
+        # ---- Right column (packed first so it keeps its width) -------------
+        side = tk.Frame(content, bg=T["bg_main"], width=340)
+        side.pack(side=tk.RIGHT, fill=tk.Y)
+        side.pack_propagate(False)
 
-        cam_hdr = tk.Frame(left_panel, bg=THEME["bg_surface"])
-        cam_hdr.pack(fill=tk.X, pady=(0, 12))
+        # ---- Left: preview + pose guide ------------------------------------
+        left = make_card(content)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 12))
 
-        tk.Label(
-            cam_hdr,
-            text="Live Camera Preview",
-            font=("Segoe UI", 12, "bold"),
-            fg=THEME["text_primary"],
-            bg=THEME["bg_surface"],
-        ).pack(side=tk.LEFT)
+        cam_hdr = tk.Frame(left, bg=T["bg_surface"])
+        cam_hdr.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(cam_hdr, text="Camera preview", font=F(10, "bold"), fg=T["text_primary"], bg=T["bg_surface"]).pack(side=tk.LEFT)
+        tk.Label(cam_hdr, text=f"Camera {CAMERA_INDEX}", font=F(9), fg=T["text_muted"], bg=T["bg_surface"]).pack(side=tk.RIGHT)
 
-        self.lbl_cam_indicator = tk.Label(
-            cam_hdr,
-            text="● CONNECTING...",
-            font=("Segoe UI", 9, "bold"),
-            fg=THEME["text_muted"],
-            bg=THEME["bg_surface"],
-        )
-        self.lbl_cam_indicator.pack(side=tk.RIGHT)
-
-        self.video_container = tk.Frame(
-            left_panel,
-            bg="#020617",
-            highlightbackground=THEME["border"],
-            highlightthickness=1,
-        )
+        self.video_container = tk.Frame(left, bg=T["bg_video"], highlightthickness=1, highlightbackground=T["border"])
         self.video_container.pack(fill=tk.BOTH, expand=True)
-
-        self.video_canvas = tk.Canvas(
-            self.video_container,
-            bg="#020617",
-            highlightthickness=0,
-        )
+        self.video_canvas = tk.Canvas(self.video_container, bg=T["bg_video"], highlightthickness=0)
         self.video_canvas.pack(fill=tk.BOTH, expand=True)
+        self.video_canvas.bind("<Configure>", lambda e: self._draw_placeholder())
 
-        self.lbl_pose_prompt = tk.Label(
-            left_panel,
-            text=f"Suggested Pose: {POSE_PROMPTS[0]}",
-            font=("Segoe UI", 10, "bold"),
-            fg="#38bdf8",
-            bg=THEME["bg_surface"],
-            pady=8,
-        )
-        self.lbl_pose_prompt.pack(fill=tk.X)
+        guide = tk.Frame(left, bg=T["bg_surface"])
+        guide.pack(fill=tk.X, pady=(14, 0))
+        guide_top = tk.Frame(guide, bg=T["bg_surface"])
+        guide_top.pack(fill=tk.X)
+        tk.Label(guide_top, text="Next pose", font=F(9), fg=T["text_secondary"], bg=T["bg_surface"]).pack(side=tk.LEFT)
+        self.lbl_pose_step = tk.Label(guide_top, text="", font=F(9), fg=T["text_secondary"], bg=T["bg_surface"])
+        self.lbl_pose_step.pack(side=tk.RIGHT)
+        self.lbl_pose_prompt = tk.Label(guide, text="", font=F(11, "bold"), fg=T["text_primary"], bg=T["bg_surface"], anchor="w")
+        self.lbl_pose_prompt.pack(fill=tk.X, pady=(2, 8))
+        self.pose_bar = SegmentBar(guide, len(POSE_PROMPTS))
+        self.pose_bar.pack(fill=tk.X)
+        self._set_pose(0)
 
-        # Right Panel (Controls & Directory)
-        right_panel = tk.Frame(content, bg=THEME["bg_main"], width=390)
-        right_panel.pack(side=tk.RIGHT, fill=tk.BOTH)
-        right_panel.pack_propagate(False)
+        # ---- Right: person card --------------------------------------------
+        person = make_card(side)
+        person.pack(fill=tk.X, pady=(0, 12))
+        tk.Label(person, text="Person", font=F(10, "bold"), fg=T["text_primary"], bg=T["bg_surface"]).pack(anchor="w")
+        tk.Label(person, text="Name", font=F(9), fg=T["text_secondary"], bg=T["bg_surface"]).pack(anchor="w", pady=(10, 4))
 
-        capture_card = tk.Frame(right_panel, bg=THEME["bg_surface"], padx=18, pady=18)
-        capture_card.pack(fill=tk.X, pady=(0, 16))
-
-        tk.Label(
-            capture_card,
-            text="PERSONNEL DETAILS",
-            font=("Segoe UI", 9, "bold"),
-            fg=THEME["text_muted"],
-            bg=THEME["bg_surface"],
-        ).pack(anchor=tk.W)
-
-        tk.Label(
-            capture_card,
-            text="Full Name / Identifier:",
-            font=("Segoe UI", 10),
-            fg=THEME["text_primary"],
-            bg=THEME["bg_surface"],
-        ).pack(anchor=tk.W, pady=(8, 4))
-
-        self.name_entry = ttk.Entry(
-            capture_card,
-            font=("Segoe UI", 11),
-            style="Enroll.TEntry",
-        )
-        self.name_entry.pack(fill=tk.X, pady=(0, 8))
+        wrap, self.name_entry = make_input(person)
+        wrap.pack(fill=tk.X)
         self.name_entry.focus()
         self.name_entry.bind("<KeyRelease>", self._on_name_changed)
 
-        self.lbl_person_stats = tk.Label(
-            capture_card,
-            text=f"Enter name to see progress (0 / {ENROLL_RECOMMENDED_COUNT} recommended).",
-            font=("Segoe UI", 9),
-            fg=THEME["text_secondary"],
-            bg=THEME["bg_surface"],
-            anchor=tk.W,
-            wraplength=345,
-            justify=tk.LEFT,
-        )
-        self.lbl_person_stats.pack(fill=tk.X, pady=(0, 12))
+        self.lbl_person_stats = tk.Label(person, text="", font=F(9), fg=T["text_secondary"], bg=T["bg_surface"], anchor="nw", justify=tk.LEFT, wraplength=290, height=2)
+        self.lbl_person_stats.pack(fill=tk.X, pady=(8, 6))
+        self.progress = ProgressBar(person)
+        self.progress.pack(fill=tk.X, pady=(0, 14))
 
-        self.btn_capture = tk.Button(
-            capture_card,
-            text="📸  Capture Photo",
-            font=("Segoe UI", 11, "bold"),
-            bg=THEME["primary"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["primary_hover"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            pady=10,
-            command=self.capture_single_photo,
-        )
+        self.btn_capture = Button(person, "Capture photo", variant="primary", command=self.capture_single_photo)
         self.btn_capture.pack(fill=tk.X)
+        self.lbl_capture_feedback = Notice(person)
+        self.lbl_capture_feedback.pack(fill=tk.X, pady=(12, 0))
 
-        self.lbl_capture_feedback = tk.Label(
-            capture_card,
-            text="",
-            font=("Segoe UI", 9),
-            fg=THEME["text_secondary"],
-            bg=THEME["bg_surface"],
-            wraplength=345,
-            justify=tk.LEFT,
-        )
-        self.lbl_capture_feedback.pack(fill=tk.X, pady=(10, 0))
+        # ---- Right: enrolled list ------------------------------------------
+        people = make_card(side)
+        people.pack(fill=tk.BOTH, expand=True)
 
-        # Enrolled Directory List
-        list_card = tk.Frame(right_panel, bg=THEME["bg_surface"], padx=18, pady=18)
-        list_card.pack(fill=tk.BOTH, expand=True)
-
-        list_header = tk.Frame(list_card, bg=THEME["bg_surface"])
-        list_header.pack(fill=tk.X, pady=(0, 10))
-
-        tk.Label(
-            list_header,
-            text="ENROLLED DIRECTORY",
-            font=("Segoe UI", 9, "bold"),
-            fg=THEME["text_muted"],
-            bg=THEME["bg_surface"],
-        ).pack(side=tk.LEFT)
-
-        self.lbl_total_enrolled = tk.Label(
-            list_header,
-            text="0 People",
-            font=("Segoe UI", 9),
-            fg=THEME["text_secondary"],
-            bg=THEME["bg_surface"],
-        )
+        list_hdr = tk.Frame(people, bg=T["bg_surface"])
+        list_hdr.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(list_hdr, text="Enrolled", font=F(10, "bold"), fg=T["text_primary"], bg=T["bg_surface"]).pack(side=tk.LEFT)
+        self.lbl_total_enrolled = tk.Label(list_hdr, text="0 enrolled", font=F(9), fg=T["text_secondary"], bg=T["bg_surface"])
         self.lbl_total_enrolled.pack(side=tk.RIGHT)
 
-        list_container = tk.Frame(
-            list_card,
-            bg=THEME["bg_main"],
-            highlightbackground=THEME["border"],
-            highlightthickness=1,
-        )
-        list_container.pack(fill=tk.BOTH, expand=True)
+        Button(people, "Delete selected", variant="danger_text", command=self.delete_selected_person).pack(side=tk.BOTTOM, fill=tk.X, pady=(12, 0))
 
-        self.personnel_listbox = tk.Listbox(
-            list_container,
-            font=("Segoe UI", 10),
-            bg=THEME["bg_main"],
-            fg=THEME["text_primary"],
-            selectbackground=THEME["bg_card"],
-            selectforeground=THEME["text_primary"],
-            activestyle="none",
-            borderwidth=0,
-            highlightthickness=0,
-        )
-        self.personnel_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
-        self.personnel_listbox.bind("<<ListboxSelect>>", self._on_list_select)
+        list_box = tk.Frame(people, bg=T["bg_input"], highlightthickness=1, highlightbackground=T["border"])
+        list_box.pack(fill=tk.BOTH, expand=True)
+        self.personnel_tree = ttk.Treeview(list_box, style="People.Treeview", columns=("count",), show="tree", selectmode="browse")
+        self.personnel_tree.column("#0", stretch=True, anchor="w", minwidth=120)
+        self.personnel_tree.column("count", width=84, anchor="e", stretch=False)
+        self.personnel_tree.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        self.personnel_tree.bind("<<TreeviewSelect>>", self._on_list_select)
+        self._lbl_list_empty = tk.Label(list_box, text="No one enrolled yet", font=F(10), fg=T["text_muted"], bg=T["bg_input"])
 
-        scrollbar = ttk.Scrollbar(
-            list_container,
-            orient=tk.VERTICAL,
-            command=self.personnel_listbox.yview,
-        )
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.personnel_listbox.config(yscrollcommand=scrollbar.set)
+        self._on_name_changed()
 
-        list_actions = tk.Frame(list_card, bg=THEME["bg_surface"])
-        list_actions.pack(fill=tk.X, pady=(12, 0))
+    # -- helpers used by the UI --------------------------------------------
+    def _set_pose(self, idx: int) -> None:
+        self.lbl_pose_prompt.config(text=POSE_PROMPTS[idx])
+        self.lbl_pose_step.config(text=f"{idx + 1} of {len(POSE_PROMPTS)}")
+        self.pose_bar.set(idx)
 
-        tk.Button(
-            list_actions,
-            text="Delete Selected",
-            font=("Segoe UI", 9),
-            bg=THEME["danger"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["danger_hover"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            pady=6,
-            command=self.delete_selected_person,
-        ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+    def _draw_placeholder(self) -> None:
+        if getattr(self, "_has_frame", False):
+            return
+        T = THEME
+        c = self.video_canvas
+        c.delete("all")
+        w, h = max(c.winfo_width(), 200), max(c.winfo_height(), 120)
+        title, sub = getattr(self, "_placeholder", ("Starting camera...", ""))
+        c.create_text(w // 2, h // 2 - (10 if sub else 0), text=title, fill=T["text_secondary"], font=F(11, "bold"))
+        if sub:
+            c.create_text(w // 2, h // 2 + 14, text=sub, fill=T["text_muted"], font=F(9))
 
-        tk.Button(
-            list_actions,
-            text="Refresh List",
-            font=("Segoe UI", 9),
-            bg=THEME["neutral_btn"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["neutral_hover"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            pady=6,
-            command=self._refresh_enrolled_list,
-        ).pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(6, 0))
 
     def _poll_queues(self) -> None:
         try:
             while not self.status_queue.empty():
                 text, color = self.status_queue.get_nowait()
                 self.lbl_cam_indicator.config(text=text, fg=color)
+                if "OFFLINE" in text.upper():
+                    self._placeholder = ("Camera unavailable", "Close any app that is using the camera, then reopen this window.")
+                    self._draw_placeholder()
         except Exception:
             pass
 
         try:
             while not self.capture_result_queue.empty():
                 ok, msg, saved_name = self.capture_result_queue.get_nowait()
-                self.btn_capture.config(state=tk.NORMAL, text="📸  Capture Photo")
+                self.btn_capture.config(state=tk.NORMAL, text="Capture photo")
                 if ok:
                     self.flash_alpha = 0.70
                     self.pose_idx = (self.pose_idx + 1) % len(POSE_PROMPTS)
-                    self.lbl_pose_prompt.config(text=f"Suggested Pose: {POSE_PROMPTS[self.pose_idx]}")
+                    self._set_pose(self.pose_idx)
                     self.lbl_capture_feedback.config(text=msg, fg=THEME["success"])
                     self._on_name_changed()
                     self._refresh_enrolled_list()
@@ -1166,13 +1446,14 @@ class FaceEnrollmentDialog:
 
                 rgb = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
                 resized = cv2.resize(rgb, (dw, dh), interpolation=cv2.INTER_LINEAR)
-                canvas_img = np.full((ch, cw, 3), 2, dtype=np.uint8)
+                canvas_img = np.full((ch, cw, 3), (12, 8, 5), dtype=np.uint8)
                 canvas_img[oy : oy + dh, ox : ox + dw] = resized
 
                 pil_img = Image.fromarray(canvas_img)
                 self.current_tk_image = ImageTk.PhotoImage(image=pil_img, master=self.video_canvas)
                 self.video_canvas.delete("all")
                 self.video_canvas.create_image(0, 0, anchor=tk.NW, image=self.current_tk_image)
+                self._has_frame = True
         except Exception:
             pass
 
@@ -1263,30 +1544,29 @@ class FaceEnrollmentDialog:
         return max_idx + 1
 
     def _on_name_changed(self, event=None) -> None:
+        rec = ENROLL_RECOMMENDED_COUNT
         raw = self.name_entry.get().strip()
         if not raw:
-            self.lbl_person_stats.config(
-                text=f"Enter name to see progress (0 / {ENROLL_RECOMMENDED_COUNT} recommended).",
-                fg=THEME["text_secondary"],
-            )
+            self.lbl_person_stats.config(text="Enter a name to begin.", fg=THEME["text_secondary"])
+            self.progress.set(0, rec)
             return
 
         safe = self._sanitize_name(raw)
         if not self._is_valid_name(safe):
-            self.lbl_person_stats.config(text="Invalid name (reserved or empty).", fg=THEME["danger"])
+            self.lbl_person_stats.config(text="Invalid name (empty or reserved).", fg=THEME["danger"])
+            self.progress.set(0, rec)
             return
 
         resolved = self._resolve_person_dir_name(safe)
         count = len(self._get_existing_photos(resolved))
-        rec = ENROLL_RECOMMENDED_COUNT
-
         if count > 25:
-            hint = f"Folder '{resolved}': {count} photos (10-15 varied photos are enough)."
+            hint = f"{resolved}: {count} photos. 10-15 varied photos are enough."
         elif count > 0:
-            hint = f"Folder '{resolved}': {count} / {rec} recommended. Clicks will append."
+            hint = f"{resolved}: {count} of {rec} recommended photos."
         else:
-            hint = f"New person '{resolved}': 0 / {rec} recommended."
+            hint = f"New person. 0 of {rec} recommended photos."
         self.lbl_person_stats.config(text=hint, fg=THEME["text_secondary"])
+        self.progress.set(count, rec)
 
     def capture_single_photo(self) -> None:
         raw_name = self.name_entry.get().strip()
@@ -1396,40 +1676,47 @@ class FaceEnrollmentDialog:
             self.capture_result_queue.put((False, f"⚠️ Validation error: {exc}", None))
 
     def _refresh_enrolled_list(self) -> None:
-        self.personnel_listbox.delete(0, tk.END)
-        if not KNOWN_FACES_DIR.exists():
-            return
+        tree = self.personnel_tree
+        tree.delete(*tree.get_children())
+        total = 0
 
-        total_people = 0
-        for entry in sorted(KNOWN_FACES_DIR.iterdir(), key=lambda p: p.name.lower()):
-            if entry.is_dir():
-                img_count = len([f for f in entry.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS])
-                self.personnel_listbox.insert(tk.END, f"{entry.name}  ({img_count} photos)")
-                total_people += 1
-            elif entry.is_file() and entry.suffix.lower() in IMAGE_EXTS:
-                self.personnel_listbox.insert(tk.END, f"{entry.stem}  (1 photo)")
-                total_people += 1
+        def _label(n: int) -> str:
+            return f"{n} photo" if n == 1 else f"{n} photos"
 
-        self.lbl_total_enrolled.config(text=f"{total_people} People")
+        if KNOWN_FACES_DIR.exists():
+            for entry in sorted(KNOWN_FACES_DIR.iterdir(), key=lambda p: p.name.lower()):
+                if entry.is_dir():
+                    n = len([f for f in entry.iterdir() if f.is_file() and f.suffix.lower() in IMAGE_EXTS])
+                    iid = entry.name
+                elif entry.is_file() and entry.suffix.lower() in IMAGE_EXTS:
+                    n, iid = 1, entry.stem
+                else:
+                    continue
+                if not tree.exists(iid):
+                    tree.insert("", tk.END, iid=iid, text="  " + iid, values=(_label(n),))
+                    total += 1
+
+        self.lbl_total_enrolled.config(text=f"{total} enrolled")
+        if total == 0:
+            self._lbl_list_empty.place(relx=0.5, rely=0.5, anchor="center")
+        else:
+            self._lbl_list_empty.place_forget()
 
     def _on_list_select(self, event=None) -> None:
-        sel = self.personnel_listbox.curselection()
+        sel = self.personnel_tree.selection()
         if not sel:
             return
-        item_text = self.personnel_listbox.get(sel[0])
-        folder_name = item_text.split("  (")[0].strip()
         self.name_entry.delete(0, tk.END)
-        self.name_entry.insert(0, folder_name)
+        self.name_entry.insert(0, sel[0])
         self._on_name_changed()
 
     def delete_selected_person(self) -> None:
-        sel = self.personnel_listbox.curselection()
+        sel = self.personnel_tree.selection()
         if not sel:
             messagebox.showinfo("Select Person", "Please select a person from the list to remove.")
             return
 
-        item_text = self.personnel_listbox.get(sel[0])
-        person_name = item_text.split("  (")[0].strip()
+        person_name = sel[0]
         target_dir = KNOWN_FACES_DIR / person_name
         target_file = KNOWN_FACES_DIR / f"{person_name}.jpg"
 
@@ -1446,7 +1733,7 @@ class FaceEnrollmentDialog:
             threading.Thread(target=self.face_db.reload, daemon=True).start()
             self._refresh_enrolled_list()
             self.lbl_capture_feedback.config(
-                text=f"Deleted '{person_name}' and scheduled cache refresh.",
+                text=f"Deleted '{person_name}'. Face database will refresh.",
                 fg=THEME["text_secondary"],
             )
             self._on_name_changed()
@@ -1480,7 +1767,7 @@ class SurveillanceGUIApp:
 
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("AI Surveillance & Security Threat Monitor")
+        self.root.title("Surveillance Monitor")
         self.root.geometry("1280x820")
         self.root.minsize(1100, 720)
         self.root.configure(bg=THEME["bg_main"])
@@ -1552,405 +1839,128 @@ class SurveillanceGUIApp:
             Path(d).mkdir(parents=True, exist_ok=True)
 
     def _configure_styles(self) -> None:
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure(
-            "Custom.Vertical.TScrollbar",
-            background=THEME["bg_surface"],
-            troughcolor=THEME["bg_main"],
-            bordercolor=THEME["border"],
-            arrowcolor=THEME["text_muted"],
-            borderwidth=0,
-            arrowsize=12,
-        )
+        init_ui_fonts()
+        apply_ttk_styles()
+
+    def _make_metric(self, parent: tk.Frame, column: int, caption: str) -> tk.Label:
+        T = THEME
+        cell = tk.Frame(parent, bg=T["bg_surface"])
+        cell.grid(row=0, column=column, sticky="nsew")
+        if column > 0:
+            tk.Frame(cell, bg=T["border"], width=1).pack(side=tk.LEFT, fill=tk.Y)
+        inner = tk.Frame(cell, bg=T["bg_surface"])
+        inner.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(16 if column > 0 else 0, 0))
+        value = tk.Label(inner, text="0", font=F(20, "bold"), fg=T["text_primary"], bg=T["bg_surface"], anchor="w")
+        value.pack(anchor="w")
+        tk.Label(inner, text=caption, font=F(9), fg=T["text_secondary"], bg=T["bg_surface"], anchor="w").pack(anchor="w")
+        return value
 
     def _build_ui(self) -> None:
-        # Header Bar
-        header = tk.Frame(self.root, bg=THEME["bg_surface"], height=64, padx=24)
+        T = THEME
+
+        # ---- Title bar -----------------------------------------------------
+        header = tk.Frame(self.root, bg=T["bg_surface"], height=52)
         header.pack(fill=tk.X, side=tk.TOP)
         header.pack_propagate(False)
+        tk.Frame(self.root, bg=T["border"], height=1).pack(fill=tk.X)
 
-        header_left = tk.Frame(header, bg=THEME["bg_surface"])
-        header_left.pack(side=tk.LEFT, fill=tk.Y)
+        tk.Label(header, text="Surveillance Monitor", font=F(12, "bold"), fg=T["text_primary"], bg=T["bg_surface"]).pack(side=tk.LEFT, padx=(20, 0))
+        self.lbl_header_status = StatusPill(header, text="Loading models...", fg=T["text_muted"])
+        self.lbl_header_status.pack(side=tk.RIGHT, padx=(0, 20))
 
-        tk.Label(
-            header_left,
-            text="AI Surveillance System",
-            font=("Segoe UI", 15, "bold"),
-            fg=THEME["text_primary"],
-            bg=THEME["bg_surface"],
-        ).pack(side=tk.LEFT, pady=16)
-
-        tk.Label(
-            header_left,
-            text=" |  Autonomous Anomaly Detection & Threat Monitoring",
-            font=("Segoe UI", 11),
-            fg=THEME["text_secondary"],
-            bg=THEME["bg_surface"],
-        ).pack(side=tk.LEFT, pady=16)
-
-        header_right = tk.Frame(header, bg=THEME["bg_surface"])
-        header_right.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.lbl_header_status = tk.Label(
-            header_right,
-            text="● LOADING MODELS...",
-            font=("Segoe UI", 9, "bold"),
-            fg=THEME["text_muted"],
-            bg=THEME["bg_surface"],
-            padx=16,
-        )
-        self.lbl_header_status.pack(side=tk.LEFT, pady=18)
-
-        btn_exit = tk.Button(
-            header_right,
-            text="✕  Exit Dashboard",
-            font=("Segoe UI", 10, "bold"),
-            bg=THEME["neutral_btn"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["danger"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            padx=16,
-            pady=6,
-            command=self.close,
-        )
-        btn_exit.pack(side=tk.LEFT, pady=14)
-
-        # Content Split View
-        content = tk.Frame(self.root, bg=THEME["bg_main"], padx=20, pady=18)
+        content = tk.Frame(self.root, bg=T["bg_main"], padx=16, pady=16)
         content.pack(fill=tk.BOTH, expand=True)
 
-        # Left Panel (Live Canvas)
-        left_panel = tk.Frame(content, bg=THEME["bg_surface"], padx=16, pady=16)
-        left_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 16))
+        # ---- Right column (packed first so it keeps its width) -------------
+        side = tk.Frame(content, bg=T["bg_main"], width=360)
+        side.pack(side=tk.RIGHT, fill=tk.Y)
+        side.pack_propagate(False)
 
-        cam_hdr = tk.Frame(left_panel, bg=THEME["bg_surface"])
+        # ---- Left: live view ------------------------------------------------
+        left = make_card(content)
+        left.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 12))
+
+        cam_hdr = tk.Frame(left, bg=T["bg_surface"])
         cam_hdr.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(cam_hdr, text="Live view", font=F(10, "bold"), fg=T["text_primary"], bg=T["bg_surface"]).pack(side=tk.LEFT)
+        tk.Label(cam_hdr, text=f"Camera {CAMERA_INDEX}", font=F(9), fg=T["text_muted"], bg=T["bg_surface"]).pack(side=tk.RIGHT)
 
-        tk.Label(
-            cam_hdr,
-            text="Live Surveillance Stream",
-            font=("Segoe UI", 12, "bold"),
-            fg=THEME["text_primary"],
-            bg=THEME["bg_surface"],
-        ).pack(side=tk.LEFT)
-
-        self.lbl_aspect_info = tk.Label(
-            cam_hdr,
-            text="Aspect Ratio: Preserved | Drag on feed to set Tripwire ROI",
-            font=("Segoe UI", 9),
-            fg=THEME["text_secondary"],
-            bg=THEME["bg_surface"],
-        )
-        self.lbl_aspect_info.pack(side=tk.RIGHT)
-
-        self.video_container = tk.Frame(
-            left_panel,
-            bg="#020617",
-            highlightbackground=THEME["border"],
-            highlightthickness=1,
-        )
+        self.video_container = tk.Frame(left, bg=T["bg_video"], highlightthickness=1, highlightbackground=T["border"])
         self.video_container.pack(fill=tk.BOTH, expand=True)
-
-        self.canvas = tk.Canvas(
-            self.video_container,
-            bg="#020617",
-            highlightthickness=0,
-            cursor="crosshair",
-        )
+        self.canvas = tk.Canvas(self.video_container, bg=T["bg_video"], highlightthickness=0, cursor="crosshair")
         self.canvas.pack(fill=tk.BOTH, expand=True)
-
         self.canvas.bind("<ButtonPress-1>", self._on_mouse_down)
         self.canvas.bind("<B1-Motion>", self._on_mouse_drag)
         self.canvas.bind("<ButtonRelease-1>", self._on_mouse_up)
         self.canvas.bind("<Configure>", self._on_canvas_resize)
 
-        # Bottom Toolbar below Canvas
-        vtool_frame = tk.Frame(left_panel, bg=THEME["bg_surface"])
-        vtool_frame.pack(fill=tk.X, pady=(12, 0))
+        toolbar = tk.Frame(left, bg=T["bg_surface"])
+        toolbar.pack(fill=tk.X, pady=(12, 0))
+        self.btn_toggle = Button(toolbar, "Start surveillance", variant="primary", width=18, command=self.toggle_surveillance)
+        self.btn_toggle.pack(side=tk.LEFT)
+        Button(toolbar, "Reset zone", variant="secondary", command=self.reset_roi).pack(side=tk.LEFT, padx=(8, 0))
+        self.lbl_roi_coords = tk.Label(toolbar, text="", font=FM(9), fg=T["text_secondary"], bg=T["bg_surface"])
+        self.lbl_roi_coords.pack(side=tk.RIGHT)
+        self._set_zone_label(self.roi_frame)
 
-        self.btn_toggle = tk.Button(
-            vtool_frame,
-            text="▶  Start Surveillance",
-            font=("Segoe UI", 10, "bold"),
-            bg=THEME["success"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["success_hover"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            padx=18,
-            pady=8,
-            command=self.toggle_surveillance,
-        )
-        self.btn_toggle.pack(side=tk.LEFT, padx=(0, 10))
+        # ---- Right: metrics --------------------------------------------------
+        metrics = make_card(side, pady=12)
+        metrics.pack(fill=tk.X, pady=(0, 12))
+        metrics.columnconfigure((0, 1, 2), weight=1, uniform="metric")
+        self.lbl_fps_val = self._make_metric(metrics, 0, "FPS")
+        self.lbl_targets_val = self._make_metric(metrics, 1, "In zone")
+        self.lbl_breach_val = self._make_metric(metrics, 2, "Breaches")
+        self.lbl_fps_val.config(text="0.0")
 
-        btn_reset_roi = tk.Button(
-            vtool_frame,
-            text="↺ Reset Tripwire ROI",
-            font=("Segoe UI", 9, "bold"),
-            bg=THEME["neutral_btn"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["neutral_hover"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            padx=14,
-            pady=8,
-            command=self.reset_roi,
-        )
-        btn_reset_roi.pack(side=tk.LEFT, padx=(0, 12))
+        # ---- Right: personnel ---------------------------------------------------
+        people = make_card(side)
+        people.pack(fill=tk.X, pady=(0, 12))
+        p_hdr = tk.Frame(people, bg=T["bg_surface"])
+        p_hdr.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(p_hdr, text="Personnel", font=F(10, "bold"), fg=T["text_primary"], bg=T["bg_surface"]).pack(side=tk.LEFT)
+        self.lbl_enrolled = tk.Label(p_hdr, text="", font=F(9), fg=T["text_secondary"], bg=T["bg_surface"])
+        self.lbl_enrolled.pack(side=tk.RIGHT)
+        p_btns = tk.Frame(people, bg=T["bg_surface"])
+        p_btns.pack(fill=tk.X)
+        p_btns.columnconfigure((0, 1), weight=1, uniform="pb")
+        Button(p_btns, "Enroll faces", variant="secondary", command=self.launch_enrollment_gui).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        Button(p_btns, "Reload database", variant="secondary", command=lambda: self.refresh_face_database(manual=True)).grid(row=0, column=1, sticky="ew", padx=(4, 0))
+        self._update_enrolled_label()
 
-        self.lbl_roi_coords = tk.Label(
-            vtool_frame,
-            text=f"Tripwire: ({self.roi_frame[0]},{self.roi_frame[1]}) - ({self.roi_frame[2]},{self.roi_frame[3]})",
-            font=("Segoe UI", 9),
-            fg=THEME["text_secondary"],
-            bg=THEME["bg_surface"],
-        )
-        self.lbl_roi_coords.pack(side=tk.LEFT)
+        # ---- Right: incidents ----------------------------------------------------
+        incidents = make_card(side)
+        incidents.pack(fill=tk.BOTH, expand=True)
+        i_hdr = tk.Frame(incidents, bg=T["bg_surface"])
+        i_hdr.pack(fill=tk.X, pady=(0, 10))
+        tk.Label(i_hdr, text="Incidents", font=F(10, "bold"), fg=T["text_primary"], bg=T["bg_surface"]).pack(side=tk.LEFT)
+        Button(i_hdr, "Clear", variant="ghost", font=F(9, "bold"), padx=8, pady=2, command=lambda: self.log_view.clear()).pack(side=tk.RIGHT)
+        Button(i_hdr, "Send test", variant="ghost", font=F(9, "bold"), padx=8, pady=2, command=self._send_test_alert).pack(side=tk.RIGHT, padx=(0, 2))
 
-        # Right Panel (Controls, Alert Channels, Telemetry & Logs)
-        right_panel = tk.Frame(content, bg=THEME["bg_main"], width=410)
-        right_panel.pack(side=tk.RIGHT, fill=tk.BOTH)
-        right_panel.pack_propagate(False)
+        i_btns = tk.Frame(incidents, bg=T["bg_surface"])
+        i_btns.pack(side=tk.BOTTOM, fill=tk.X, pady=(12, 0))
+        i_btns.columnconfigure((0, 1), weight=1, uniform="ib")
+        Button(i_btns, "Open snapshots", variant="secondary", command=self._open_outputs_dir).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        Button(i_btns, "Open CSV log", variant="secondary", command=self._open_incidents_csv).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
-        # Card 1: Input & Personnel Access
-        source_card = tk.Frame(right_panel, bg=THEME["bg_surface"], padx=16, pady=12)
-        source_card.pack(fill=tk.X, pady=(0, 12))
+        self.log_view = LogView(incidents)
+        self.log_view.pack(fill=tk.BOTH, expand=True)
 
-        tk.Label(
-            source_card,
-            text="VIDEO INPUT & PERSONNEL ACCESS",
-            font=("Segoe UI", 9, "bold"),
-            fg=THEME["text_muted"],
-            bg=THEME["bg_surface"],
-        ).pack(anchor=tk.W)
+    def _set_zone_label(self, rect: List[int]) -> None:
+        x1, y1, x2, y2 = rect
+        self.lbl_roi_coords.config(text=f"Zone  {x1}, {y1}  –  {x2}, {y2}")
 
-        cam_status_box = tk.Frame(
-            source_card,
-            bg=THEME["bg_input"],
-            padx=12,
-            pady=9,
-            highlightbackground=THEME["border"],
-            highlightthickness=1,
-        )
-        cam_status_box.pack(fill=tk.X, pady=(8, 10))
+    def _update_enrolled_label(self) -> None:
+        n = 0
+        try:
+            for entry in KNOWN_FACES_DIR.iterdir():
+                if entry.is_dir() and any(f.suffix.lower() in IMAGE_EXTS for f in entry.iterdir()):
+                    n += 1
+                elif entry.is_file() and entry.suffix.lower() in IMAGE_EXTS:
+                    n += 1
+        except Exception:
+            pass
+        self.lbl_enrolled.config(text=f"{n} enrolled")
 
-        tk.Label(
-            cam_status_box,
-            text=f"🎥  Live Camera Feed (Device {CAMERA_INDEX})",
-            font=("Segoe UI", 10, "bold"),
-            fg=THEME["text_primary"],
-            bg=THEME["bg_input"],
-        ).pack(side=tk.LEFT)
-
-        self.lbl_cam_live_tag = tk.Label(
-            cam_status_box,
-            text="● STANDBY",
-            font=("Segoe UI", 8, "bold"),
-            fg=THEME["text_muted"],
-            bg=THEME["bg_input"],
-        )
-        self.lbl_cam_live_tag.pack(side=tk.RIGHT)
-
-        btn_grid = tk.Frame(source_card, bg=THEME["bg_surface"])
-        btn_grid.pack(fill=tk.X)
-
-        btn_enroll = tk.Button(
-            btn_grid,
-            text="👤 Face Enrollment Studio",
-            font=("Segoe UI", 9, "bold"),
-            bg=THEME["primary"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["primary_hover"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            pady=6,
-            command=self.launch_enrollment_gui,
-        )
-        btn_enroll.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
-
-        btn_reload_db = tk.Button(
-            btn_grid,
-            text="🔄 Refresh DB",
-            font=("Segoe UI", 9, "bold"),
-            bg=THEME["neutral_btn"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["neutral_hover"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            pady=6,
-            command=lambda: self.refresh_face_database(manual=True),
-        )
-        btn_reload_db.pack(side=tk.RIGHT, padx=(6, 0))
-
-        # Card 2: Incident & Audit Channels
-        alert_card = tk.Frame(right_panel, bg=THEME["bg_surface"], padx=16, pady=10)
-        alert_card.pack(fill=tk.X, pady=(0, 12))
-
-        tk.Label(
-            alert_card,
-            text="INCIDENT & AUDIT CHANNELS",
-            font=("Segoe UI", 9, "bold"),
-            fg=THEME["text_muted"],
-            bg=THEME["bg_surface"],
-        ).pack(anchor=tk.W, pady=(0, 6))
-
-        alert_row = tk.Frame(alert_card, bg=THEME["bg_surface"])
-        alert_row.pack(fill=tk.X)
-
-        tk.Label(
-            alert_row,
-            text="● Incident CSV & Snapshots Active",
-            font=("Segoe UI", 9, "bold"),
-            fg=THEME["success"],
-            bg=THEME["bg_surface"],
-        ).pack(side=tk.LEFT)
-
-        btn_test_alert = tk.Button(
-            alert_row,
-            text="Send Test Alert",
-            font=("Segoe UI", 8, "bold"),
-            bg=THEME["bg_card"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["neutral_btn"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            padx=10,
-            pady=4,
-            command=self._send_test_alert,
-        )
-        btn_test_alert.pack(side=tk.RIGHT)
-
-        # Card 3: Telemetry
-        metrics_card = tk.Frame(right_panel, bg=THEME["bg_surface"], padx=16, pady=10)
-        metrics_card.pack(fill=tk.X, pady=(0, 12))
-
-        tk.Label(
-            metrics_card,
-            text="SYSTEM TELEMETRY",
-            font=("Segoe UI", 9, "bold"),
-            fg=THEME["text_muted"],
-            bg=THEME["bg_surface"],
-        ).pack(anchor=tk.W, pady=(0, 6))
-
-        stats_row = tk.Frame(metrics_card, bg=THEME["bg_surface"])
-        stats_row.pack(fill=tk.X)
-
-        fps_box = tk.Frame(stats_row, bg=THEME["bg_card"], padx=10, pady=6)
-        fps_box.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
-        tk.Label(fps_box, text="FPS", font=("Segoe UI", 8), fg=THEME["text_secondary"], bg=THEME["bg_card"]).pack()
-        self.lbl_fps_val = tk.Label(fps_box, text="0.0", font=("Segoe UI", 12, "bold"), fg=THEME["text_primary"], bg=THEME["bg_card"])
-        self.lbl_fps_val.pack()
-
-        targets_box = tk.Frame(stats_row, bg=THEME["bg_card"], padx=10, pady=6)
-        targets_box.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
-        tk.Label(targets_box, text="IN TRIPWIRE", font=("Segoe UI", 8), fg=THEME["text_secondary"], bg=THEME["bg_card"]).pack()
-        self.lbl_targets_val = tk.Label(targets_box, text="0", font=("Segoe UI", 12, "bold"), fg="#38bdf8", bg=THEME["bg_card"])
-        self.lbl_targets_val.pack()
-
-        breach_box = tk.Frame(stats_row, bg=THEME["bg_card"], padx=10, pady=6)
-        breach_box.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
-        tk.Label(breach_box, text="BREACHES", font=("Segoe UI", 8), fg=THEME["text_secondary"], bg=THEME["bg_card"]).pack()
-        self.lbl_breach_val = tk.Label(breach_box, text="0", font=("Segoe UI", 12, "bold"), fg=THEME["danger"], bg=THEME["bg_card"])
-        self.lbl_breach_val.pack()
-
-        # Card 4: Incident Log
-        log_card = tk.Frame(right_panel, bg=THEME["bg_surface"], padx=16, pady=12)
-        log_card.pack(fill=tk.BOTH, expand=True)
-
-        log_hdr = tk.Frame(log_card, bg=THEME["bg_surface"])
-        log_hdr.pack(fill=tk.X, pady=(0, 6))
-
-        tk.Label(
-            log_hdr,
-            text="SECURITY ALERTS & INCIDENT LOG",
-            font=("Segoe UI", 9, "bold"),
-            fg=THEME["text_muted"],
-            bg=THEME["bg_surface"],
-        ).pack(side=tk.LEFT)
-
-        btn_clear_log = tk.Button(
-            log_hdr,
-            text="Clear",
-            font=("Segoe UI", 8),
-            bg=THEME["bg_card"],
-            fg=THEME["text_secondary"],
-            relief="flat",
-            cursor="hand2",
-            padx=8,
-            command=lambda: self.log_listbox.delete(0, tk.END),
-        )
-        btn_clear_log.pack(side=tk.RIGHT)
-
-        log_container = tk.Frame(
-            log_card,
-            bg=THEME["bg_input"],
-            highlightbackground=THEME["border"],
-            highlightthickness=1,
-        )
-        log_container.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
-
-        self.log_listbox = tk.Listbox(
-            log_container,
-            font=("Consolas", 9),
-            bg=THEME["bg_input"],
-            fg="#fca5a5",
-            selectbackground=THEME["bg_card"],
-            selectforeground=THEME["text_primary"],
-            highlightthickness=0,
-            borderwidth=0,
-        )
-        self.log_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4, pady=4)
-
-        log_scroll = ttk.Scrollbar(
-            log_container,
-            orient=tk.VERTICAL,
-            command=self.log_listbox.yview,
-            style="Custom.Vertical.TScrollbar",
-        )
-        log_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.log_listbox.config(yscrollcommand=log_scroll.set)
-
-        out_btn_row = tk.Frame(log_card, bg=THEME["bg_surface"])
-        out_btn_row.pack(fill=tk.X)
-
-        btn_open_outputs = tk.Button(
-            out_btn_row,
-            text="📂  Open Snapshots Folder",
-            font=("Segoe UI", 9, "bold"),
-            bg=THEME["bg_card"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["neutral_btn"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            pady=7,
-            command=self._open_outputs_dir,
-        )
-        btn_open_outputs.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
-
-        btn_open_csv = tk.Button(
-            out_btn_row,
-            text="📄  Open CSV Log",
-            font=("Segoe UI", 9, "bold"),
-            bg=THEME["bg_card"],
-            fg=THEME["text_primary"],
-            activebackground=THEME["neutral_btn"],
-            activeforeground=THEME["text_primary"],
-            relief="flat",
-            cursor="hand2",
-            pady=7,
-            padx=10,
-            command=self._open_incidents_csv,
-        )
-        btn_open_csv.pack(side=tk.RIGHT, padx=(4, 0))
 
     def _send_test_alert(self) -> None:
         dummy = np.zeros((240, 320, 3), dtype=np.uint8)
@@ -1959,7 +1969,7 @@ class SurveillanceGUIApp:
         self.alert_manager.emit(
             "SYSTEM",
             0,
-            "🔔 TEST ALERT: Incident logging & snapshot verified",
+            "TEST ALERT: Logging and snapshot check completed",
             snapshot_bgr=dummy,
             extra={"state": "TEST"},
         )
@@ -1974,6 +1984,7 @@ class SurveillanceGUIApp:
         if not self.canvas.winfo_exists():
             return
 
+        T = THEME
         self.canvas.delete("all")
         self.current_tk_image = None
 
@@ -1981,26 +1992,10 @@ class SurveillanceGUIApp:
         ch = max(self.canvas.winfo_height(), self.canvas_h, 200)
         cx, cy = cw // 2, ch // 2
 
-        self.canvas.create_rectangle(0, 0, cw, ch, fill="#020617", outline="")
-        for r in [220, 150, 80]:
-            self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline="#1e293b", width=1, dash=(3, 5))
-        self.canvas.create_line(cx - 260, cy, cx + 260, cy, fill="#1e293b", width=1, dash=(2, 4))
-        self.canvas.create_line(cx, cy - 180, cx, cy + 180, fill="#1e293b", width=1, dash=(2, 4))
-
-        card_w, card_h = 420, 175
-        self.canvas.create_rectangle(
-            cx - card_w // 2, cy - card_h // 2, cx + card_w // 2, cy + card_h // 2,
-            fill="#0f172a", outline="#334155", width=1,
-        )
-        badge_w, badge_h = 180, 26
-        self.canvas.create_rectangle(
-            cx - badge_w // 2, cy - 50 - badge_h // 2, cx + badge_w // 2, cy - 50 + badge_h // 2,
-            fill="#1e293b", outline="#475569", width=1,
-        )
-        self.canvas.create_text(cx, cy - 50, text="● SURVEILLANCE OFFLINE", fill="#94a3b8", font=("Segoe UI", 9, "bold"))
-        self.canvas.create_text(cx, cy - 12, text="Live Video Feed Paused", fill="#f8fafc", font=("Segoe UI", 15, "bold"))
-        self.canvas.create_text(cx, cy + 20, text='Click "▶ Start Surveillance" below to activate camera', fill="#94a3b8", font=("Segoe UI", 10))
-        self.canvas.create_text(cx, cy + 48, text="Tripwire ROI and AI threat detection are on standby", fill="#64748b", font=("Segoe UI", 8))
+        self.canvas.create_rectangle(0, 0, cw, ch, fill=T["bg_video"], outline="")
+        self.canvas.create_text(cx, cy - 22, text="Surveillance is stopped", fill=T["text_primary"], font=F(15, "bold"))
+        self.canvas.create_text(cx, cy + 8, text=f"Camera {CAMERA_INDEX} is idle. Press Start to begin monitoring.", fill=T["text_secondary"], font=F(10))
+        self.canvas.create_text(cx, cy + 34, text="While running, drag on the video to redraw the zone.", fill=T["text_muted"], font=F(9))
 
     def _get_canvas_to_frame_scale(self) -> Tuple[float, int, int]:
         cw, ch = self.canvas_w, self.canvas_h
@@ -2038,7 +2033,7 @@ class SurveillanceGUIApp:
         fx1, fy1 = self._canvas_to_frame_pt(min(x1, x2), min(y1, y2))
         fx2, fy2 = self._canvas_to_frame_pt(max(x1, x2), max(y1, y2))
         self.temp_drag_roi = [fx1, fy1, fx2, fy2]
-        self.lbl_roi_coords.config(text=f"Tripwire: ({fx1},{fy1}) - ({fx2},{fy2})")
+        self._set_zone_label([fx1, fy1, fx2, fy2])
 
     def _on_mouse_up(self, event) -> None:
         self.is_drawing_roi = False
@@ -2047,16 +2042,12 @@ class SurveillanceGUIApp:
             if abs(fx2 - fx1) > 20 and abs(fy2 - fy1) > 20:
                 self.roi_frame = [fx1, fy1, fx2, fy2]
             self.temp_drag_roi = None
-        self.lbl_roi_coords.config(
-            text=f"Tripwire: ({self.roi_frame[0]},{self.roi_frame[1]}) - ({self.roi_frame[2]},{self.roi_frame[3]})"
-        )
+        self._set_zone_label(self.roi_frame)
 
     def reset_roi(self) -> None:
         w, h = self.frame_orig_w, self.frame_orig_h
         self.roi_frame = [int(w * 0.15), int(h * 0.15), int(w * 0.85), int(h * 0.85)]
-        self.lbl_roi_coords.config(
-            text=f"Tripwire: ({self.roi_frame[0]},{self.roi_frame[1]}) - ({self.roi_frame[2]},{self.roi_frame[3]})"
-        )
+        self._set_zone_label(self.roi_frame)
 
     def _start_polling_loop(self) -> None:
         try:
@@ -2076,6 +2067,7 @@ class SurveillanceGUIApp:
         now = time.time()
         if (now - self._last_sig_check >= 2.0) and not self._db_reloading:
             self._last_sig_check = now
+            self._update_enrolled_label()
             sig = self.face_db.signature()
             if sig != self._last_db_sig:
                 self._last_db_sig = sig
@@ -2098,14 +2090,16 @@ class SurveillanceGUIApp:
                 cx1, cy1, cx2, cy2 = self._frame_to_canvas_rect(active_roi)
                 dash_style = (4, 4) if self.temp_drag_roi else None
 
-                self.canvas.create_rectangle(cx1, cy1, cx2, cy2, outline="#38bdf8", width=2, dash=dash_style)
-                self.canvas.create_text(
-                    cx1 + 6, cy1 + 12, text="Tripwire Zone", fill="#38bdf8", anchor=tk.W, font=("Segoe UI", 9, "bold")
-                )
+                zc = THEME["zone"]
+                self.canvas.create_rectangle(cx1, cy1, cx2, cy2, outline=zc, width=2, dash=dash_style)
+                chip_w, chip_h = 112, 20
+                chip_y = cy1 - chip_h if cy1 - chip_h >= 0 else cy1
+                self.canvas.create_rectangle(cx1 - 1, chip_y, cx1 - 1 + chip_w, chip_y + chip_h, fill=zc, outline="")
+                self.canvas.create_text(cx1 + 7, chip_y + chip_h // 2, text="Restricted zone", fill="#0d1117", anchor=tk.W, font=F(9, "bold"))
 
                 self.lbl_fps_val.config(text=f"{fps_val:.1f}")
-                self.lbl_targets_val.config(text=str(targets))
-                self.lbl_breach_val.config(text=str(breaches_val))
+                self.lbl_targets_val.config(text=str(targets), fg=THEME["info"] if targets else THEME["text_primary"])
+                self.lbl_breach_val.config(text=str(breaches_val), fg=THEME["danger"] if breaches_val else THEME["text_primary"])
         except Exception:
             pass
 
@@ -2235,9 +2229,8 @@ class SurveillanceGUIApp:
             pass
 
         self.is_running = True
-        self.btn_toggle.config(text="⏹  Stop Surveillance", bg=THEME["danger"], activebackground=THEME["danger_hover"])
+        self.btn_toggle.config(text="Stop surveillance", variant="danger")
         self.lbl_header_status.config(text="● LIVE MONITORING", fg=THEME["success"])
-        self.lbl_cam_live_tag.config(text="● LIVE", fg=THEME["success"])
 
         self.video_thread = threading.Thread(target=self._process_stream_loop, daemon=True)
         self.video_thread.start()
@@ -2260,11 +2253,10 @@ class SurveillanceGUIApp:
             except Exception:
                 pass
 
-        self.btn_toggle.config(text="▶  Start Surveillance", bg=THEME["success"], activebackground=THEME["success_hover"])
+        self.btn_toggle.config(text="Start surveillance", variant="primary")
         self.lbl_header_status.config(text="● STANDBY", fg=THEME["text_muted"])
-        self.lbl_cam_live_tag.config(text="● STANDBY", fg=THEME["text_muted"])
         self.lbl_fps_val.config(text="0.0")
-        self.lbl_targets_val.config(text="0")
+        self.lbl_targets_val.config(text="0", fg=THEME["text_primary"])
         self._render_standby_screen()
 
     def _start_verify_worker(self) -> None:
@@ -2511,49 +2503,36 @@ class SurveillanceGUIApp:
                 if not in_roi:
                     if is_auth:
                         box_color = (128, 222, 74)
-                        status_text = f"AUTH: {p_entry['name']} (OUTSIDE)"
+                        status_text = f"{p_entry['name']} (outside zone)"
                     else:
                         box_color = (0, 200, 255)
-                        status_text = "OUTSIDE ZONE"
+                        status_text = "Outside zone"
                 elif state == "SCANNING":
                     box_color = (255, 180, 0)
-                    status_text = "SCANNING / VERIFYING..."
+                    status_text = "Verifying..."
                 elif is_auth:
                     if is_fall:
                         box_color = (0, 140, 255)
-                        status_text = f"AUTH: {p_entry['name']} | ! FALL DETECTED"
+                        status_text = f"{p_entry['name']} | FALL"
                     elif is_running_fast:
                         box_color = (0, 180, 255)
-                        status_text = f"AUTH: {p_entry['name']} | RUNNING"
+                        status_text = f"{p_entry['name']} | Running"
                     else:
                         box_color = (128, 222, 74)
-                        status_text = f"AUTHORIZED: {p_entry['name']}"
+                        status_text = f"Authorized: {p_entry['name']}"
                 else:
                     box_color = (68, 68, 239)
-                    base_lbl = "FACE OBSCURED / INTRUDER" if state == "OBSCURED" else "UNAUTHORIZED INTRUDER"
-                    parts = [f"{base_lbl} ({dwell_time:.1f}s)"]
+                    base_lbl = "Face covered" if state == "OBSCURED" else "Intruder"
+                    parts = [f"{base_lbl} {dwell_time:.1f}s"]
                     if is_loitering:
-                        parts.append("LOITERING")
+                        parts.append("Loitering")
                     if is_fall:
-                        parts.append("! FALL DETECTED")
+                        parts.append("FALL")
                     if is_running_fast:
-                        parts.append("RUNNING")
+                        parts.append("Running")
                     status_text = " | ".join(parts)
 
-                cv2.rectangle(frame, (bx1, by1), (bx2, by2), box_color, 2)
-                badge_text = f"ID:{tid} | {status_text}"
-                (lw, lh), _ = cv2.getTextSize(badge_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-                bg_x1 = max(0, min(bx1, max(0, fw - lw - 8)))
-                bg_x2 = min(fw, bg_x1 + lw + 8)
-                if by1 - lh - 8 >= 0:
-                    bg_y1, bg_y2 = by1 - lh - 8, by1
-                    txt_y = by1 - 4
-                else:
-                    bg_y1, bg_y2 = by1, min(fh, by1 + lh + 8)
-                    txt_y = bg_y2 - 4
-
-                cv2.rectangle(frame, (bg_x1, bg_y1), (bg_x2, bg_y2), box_color, -1)
-                cv2.putText(frame, badge_text, (bg_x1 + 4, txt_y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (15, 23, 42), 1, cv2.LINE_AA)
+                draw_person_badge(frame, (bx1, by1, bx2, by2), tid, status_text, box_color)
 
                 extra_meta = {
                     "name": p_entry["name"] or state,
@@ -2606,7 +2585,7 @@ class SurveillanceGUIApp:
             if pending_alerts:
                 snap = frame.copy()
                 cv2.polylines(snap, [roi_polygon], isClosed=True, color=(245, 158, 11), thickness=2)
-                cv2.putText(snap, "ACTIVE TRIPWIRE ZONE", (fx1 + 8, max(20, fy1 + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (245, 158, 11), 2, cv2.LINE_AA)
+                cv2.putText(snap, "RESTRICTED ZONE", (fx1 + 8, max(20, fy1 + 22)), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (245, 158, 11), 2, cv2.LINE_AA)
                 for ev_type, tid_a, msg_a, extra_a in pending_alerts:
                     self.alert_manager.emit(ev_type, tid_a, msg_a, snapshot_bgr=snap, extra=extra_a)
 
@@ -2638,9 +2617,7 @@ class SurveillanceGUIApp:
                 pass
 
     def _add_log_entry(self, entry: str) -> None:
-        self.log_listbox.insert(0, entry)
-        if self.log_listbox.size() > 100:
-            self.log_listbox.delete(100, tk.END)
+        self.log_view.add(entry)
 
     def close(self) -> None:
         self.stop_surveillance()

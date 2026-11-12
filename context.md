@@ -17,9 +17,7 @@ Unlike passive recording, this system autonomously:
    - **Pose-Based Fall / Collapse Detection**: Computes torso tilt angle from shoulders/hips (`> 60°` sustained `>= 1.0s`), with calibrated bounding-box ratio fallback.
    - **Running / Rapid Movement**: Scale-invariant movement speed (`> 1.5 body-heights/sec` sustained `>= 0.5s`).
    - **Zone Crowding & Restricted Hours**: Optional configurable `MAX_PEOPLE_IN_ROI` and `RESTRICTED_HOURS`.
-5. **Dispatches Multi-Channel Alerts (`AlertManager`)**:
-   - Plays a local Windows two-tone **Siren** (`assets/siren.wav`, auto-generated if absent).
-   - Sends optional **Telegram** photo alerts (`TG_TOKEN`, `TG_CHAT`).
+5. **Incident Logging & Auditing (`AlertManager`)**:
    - Saves full-frame annotated JPEG snapshots (with all bounding boxes + ROI) to `outputs/`.
    - Appends structured audit records to `outputs/incidents.csv` and updates the live GUI log.
 
