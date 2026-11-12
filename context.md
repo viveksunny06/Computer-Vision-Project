@@ -86,7 +86,6 @@ Computer-Vision-Project/
 ├── README.md                    # Quickstart, setup, and submission inventory
 ├── context.md                   # Comprehensive system report and technical architecture
 ├── yolov8n-pose.pt              # Local YOLOv8-Pose nano weights (~6.8 MB)
-├── yolov8n.pt                   # Local YOLOv8 fallback detection weights (~6.5 MB)
 │
 ├── cache/                       # embeddings.npz + manifest.json (instant startup cache)
 ├── known_faces/                 # Authorized personnel biometric folders (e.g., vivek/, Susan/)

@@ -1,9 +1,16 @@
-prompt.md
-
 known_faces/
 outputs/
 cache/
 _archive/
 __pycache__/
 
+# LaTeX files & reports (private submission files, not for public repo)
 report.tex
+*.tex
+*.pdf
+*.aux
+*.log
+*.out
+*.synctex.gz
+*.fdb_latexmk
+*.fls

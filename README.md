@@ -19,7 +19,6 @@ Computer-Vision-Project/
 ├── yolov8n-pose.pt          # Pretrained YOLOv8-Pose weights (17-keypoint human skeleton model)
 ├── requirements.txt         # Pinned Python dependencies
 ├── context.md               # Technical report, model benchmark analysis & state machine design
-├── report.tex               # Formatted LaTeX technical report (IEEE/ACM laboratory paper style)
 └── README.md                # System documentation and operational manual
 ```
 
@@ -57,7 +56,7 @@ python main.py
 
 ### 3. Personnel Face Enrollment
 
-Enroll authorized individuals directly from the running dashboard by clicking **`👤 Enroll personnel`** (which safely pauses surveillance to release the camera), or launch the enrollment studio directly via CLI:
+Enroll authorized individuals directly from the running dashboard by clicking **`Enroll personnel`** (which safely pauses surveillance to release the camera), or launch the enrollment studio directly via CLI:
 
 ```bash
 python main.py --enroll
@@ -65,7 +64,7 @@ python main.py --enroll
 
 1. Enter the person's identifier or name (e.g., `Vivek`).
 2. Follow the guided pose prompts (*Front*, *Slightly left*, *Slightly right*, *Slightly up*, *Smile*, etc.).
-3. Click **`📸 Capture Photo`** to acquire samples. The background biometric gate automatically verifies that:
+3. Click **`Capture Photo`** to acquire samples. The background biometric gate automatically verifies that:
    * Exactly 1 face is present with YuNet detection confidence $\ge 0.90$.
    * Face width is at least 80 pixels.
    * Image sharpness (Laplacian variance) meets the clarity threshold ($\ge 60.0$).
@@ -102,13 +101,6 @@ python main.py --enroll
 | `FALL_SUSTAIN_SEC` | `1.0s` | Required temporal duration of horizontal posture before fall dispatch |
 | `LOITERING_THRESHOLD_SEC`| `4.0s` | Dwell duration triggering loitering escalation for unauthorized persons |
 | `REAUTH_INTERVAL_SEC` | `10.0s` | Periodic re-verification timer to detect ID switches or substitutions |
-
----
-
-## Documentation
-
-- [System Architecture & Decisions](context.md) — Comprehensive technical reference detailing system design, verification state machines, biometric calibration benchmarks, and behavioral threat detection rules.
-- [Technical Project Report (LaTeX)](report.tex) — Complete 3-page laboratory paper typeset in standard academic format including methodology, system flow diagram, empirical crossing evaluation, and base paper citations.
 
 ---
 
