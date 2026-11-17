@@ -4,6 +4,7 @@ cache/
 _archive/
 __pycache__/
 prep/
+context.md
 
 report.tex
 *.tex
