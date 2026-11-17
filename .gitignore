@@ -3,8 +3,8 @@ outputs/
 cache/
 _archive/
 __pycache__/
+prep/
 
-# LaTeX files & reports (private submission files, not for public repo)
 report.tex
 *.tex
 *.pdf
